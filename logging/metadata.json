@@ -1,0 +1,32 @@
+{
+  "run": {
+    "started_at": "2026-08-05T04:31:26.724320+00:00",
+    "finished_at": "2026-08-05T04:36:05.117464+00:00",
+    "total_cases": 50,
+    "succeeded": 50,
+    "failed": 0
+  },
+  "policy_version": "EC_POLICY_V1",
+  "model": {
+    "name": "gpt-4o-mini",
+    "provider": "OpenAI",
+    "parameter_size": "undisclosed by OpenAI (closed-weight); instructor-approved substitute for the assignment's <=10B local-model requirement",
+    "role": "reasoning/handoff narration only; all decision fields are computed by the deterministic rule engine (src/policy_rules.py)"
+  },
+  "agents": [
+    "coordinator",
+    "order_seller_agent",
+    "delivery_agent",
+    "payment_agent",
+    "policy_agent",
+    "verifier_agent"
+  ],
+  "framework": "custom Python multi-agent pipeline (no third-party agent framework); openai SDK for LLM calls, pandas for data access, pydantic for schema validation",
+  "runtime": {
+    "python": "3.10.9",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "openai_sdk": "2.47.0",
+    "pandas": "2.3.3",
+    "pydantic": "2.13.4"
+  }
+}
