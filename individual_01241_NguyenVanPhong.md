@@ -16,87 +16,81 @@
 
 | Module/deliverable | File/hàm phụ trách | Input nhận vào | Output bàn giao | Trạng thái |
 | ------------------- | -------------------- | ---------------- | ------------------ | ------------ |
-| Coordinator Agent — nhận case, điều phối handoff giữa Order&Seller / Payment / Delivery / Policy / Verifier Agent, tổng hợp kết quả cuối | `src/agents/coordinator_agent.py` | 1 file `input/EC_xxx.json` + kết quả trung gian từ các agent con | JSON cuối theo schema output (sau khi Verifier ký duyệt) | Hoàn thành |
-| Orchestration pipeline chạy toàn bộ 50 case, quản lý logging/trace | `src/run_pipeline.py`, `src/trace_logger.py` | 50 file `input/EC_001.json` → `EC_050.json` | 50 file `output/EC_xxx.json`, `logging/trace.jsonl` đầy đủ | Hoàn thành |
-| Quản lý repo chung, `logging/metadata.json`, đảm bảo `.env`/source code tách khỏi zip nộp | `logging/metadata.json`, `.gitignore`, `.env.example` | Cấu hình model, framework, runtime | `metadata.json` khai đúng tên model (`gpt-4o-mini`), ghi chú param size | Hoàn thành |
+| Coordinator Agent — nhận case, gọi lần lượt Order & Seller / Delivery / Payment Agent, đưa 3 bộ fact cho Policy Agent, rồi build + verify | `src/coordinator.py` (`Coordinator.process_case()`) | 1 dict case đã parse từ `input/EC_xxx.json` | payload JSON cuối theo schema, sau khi Verifier Agent thông qua | Hoàn thành |
+| Entrypoint chạy toàn bộ 50 case, ghi `output/`, `logging/trace.jsonl`, `logging/metadata.json` | `run_pipeline.py` (root), `src/config.py`, `src/data_store.py` | 50 file `input/EC_001.json` → `EC_050.json` | 50 file `output/EC_xxx.json`, trace + metadata đầy đủ | Hoàn thành |
+| Reconcile 4 nhánh git phân kỳ của nhóm (`main`, `nhi`, `hoang`, `feature/payment_agent_phuc`), xác định nhánh nào là bản nộp cuối | `git` (branch/merge, không phải file code) | Điểm thật từng nhánh (nộp qua leaderboard) | Repo `main` chốt là bản nộp, các nhánh khác giữ nguyên làm tham khảo | Hoàn thành |
 
 ### Việc hỗ trợ ngoài phạm vi chính
 
 | Hoạt động | Thành viên/module được hỗ trợ | Kết quả |
 | ---------- | ------------------------------- | --------- |
-| [Debug/tích hợp/tài liệu] | [Tên hoặc module] | [Kết quả và bằng chứng] |
+| Đối chiếu độc lập thiết kế evidence/entity giữa nhánh của tôi và nhánh `hoang` của Hoàng | Toàn nhóm | Xác nhận 2 implementation độc lập hội tụ cùng 1 kết luận (item/payment luôn trích, seller chỉ trích khi là responsible party) — tăng độ tin cậy thiết kế trước khi chốt bản nộp |
 
 ## 3. Kết quả theo vai trò
 
 | Nhiệm vụ đã thực hiện | File/hàm/artifact liên quan | Kết quả bàn giao | Cách xác minh |
 | ----------------------- | ------------------------------ | ------------------- | --------------- |
-| Chạy pipeline điều phối 5 agent cho toàn bộ 50 case, ghi output + trace | `src/run_pipeline.py` | `python -m src.run_pipeline` | 50/50 file `output/EC_xxx.json`, `logging/trace.jsonl` 550 dòng | `python -c "import json,glob; [json.load(open(f,encoding='utf-8')) for f in glob.glob('output/EC_*.json')]"` — không lỗi |
+| Chạy `run_pipeline.py` cho toàn bộ 50 case trên nhánh `main` | `run_pipeline.py`, `src/coordinator.py` | 50/50 `output/EC_xxx.json`, `logging/metadata.json` ghi `succeeded: 50, failed: 0` | `python run_pipeline.py` rồi `python -c "import json,glob; [json.load(open(f,encoding='utf-8')) for f in glob.glob('output/EC_*.json')]"` — không lỗi |
 
 Nêu một output cụ thể mà phần việc của bạn tạo ra hoặc giúp xác minh:
 
-`logging/trace.jsonl` dòng `case_id=EC_001` ghi đủ chuỗi handoff: `coordinator_agent.case_start` → `order_seller_agent.lookup` → `payment_agent.reconcile` → `delivery_agent.compare_timing` → `policy_agent.rule_decision` → `verifier_agent.validate` → `coordinator_agent.case_end`, kết quả cuối `output/EC_001.json` có `primary_issue: "late_delivery_seller"`, `recommended_refund_brl: 12.04`.
+Tự chạy lại `run_pipeline.py` (không dùng lại file `output/` cũ) trên máy khác, `logging/metadata.json` ghi `started_at`/`finished_at` chênh **278.3 giây** cho 50 case (chạy tuần tự, không song song), `succeeded: 50, failed: 0`; đối chiếu output mới sinh ra với bản đã commit — `confidence = 1.0` ở toàn bộ 50 case, cấu trúc `evidence_ids` từng nhánh khớp 100% với mô tả trong `architecture.md`.
 
 ## 4. Giải thích phần kỹ thuật đã thực hiện
 
 ### Vấn đề cần giải quyết
 
-Coordinator Agent chịu trách nhiệm nhận từng case input, gọi lần lượt (hoặc song song) các agent chuyên trách domain (order/seller, payment, delivery), thu thập bằng chứng (evidence) họ trả về, chuyển cho Policy Agent áp `EC_POLICY_V1`, rồi chuyển kết quả cho Verifier Agent kiểm tra trước khi ghi ra `output/EC_xxx.json`. Vấn đề cốt lõi: đảm bảo luồng handoff có thứ tự, không để một agent tự suy diễn toàn bộ kết luận.
+Coordinator phải nhận `claimed_order_id`, gọi đúng thứ tự các agent chuyên trách domain (Order & Seller, Delivery, Payment — Delivery và Payment độc lập với nhau, chỉ Payment cần `item_total`/`freight_total` do Order & Seller tính trước), gộp 3 bộ fact cho Policy Agent ra quyết định, rồi build payload và để Verifier Agent gác cổng trước khi ghi file. Ngoài phần code, vấn đề lớn hơn nảy sinh giữa chừng: 4 thành viên tự build 4 nhánh git độc lập (kiến trúc code khác hẳn nhau), cần một quy trình để chọn ra bản nộp cuối cùng dựa trên **điểm thật**, không phải cảm tính.
 
 ### Cách triển khai
 
-`coordinator_agent.process_case()` gọi tuần tự (không song song) 5 hàm: `order_seller_agent.analyze()` → `payment_agent.analyze()` → `delivery_agent.analyze()` → `policy_agent.decide()` → `verifier_agent.build()`. Mỗi hàm nhận dict kết quả của bước trước làm tham số (không agent nào tự đọc lại CSV mà agent trước đã đọc), và tự ghi 1-2 dòng vào `trace_logger` (raw lookup/reconcile + `llm_finding`). Nếu `order_seller_agent` không tìm thấy `claimed_order_id` trong `orders.csv`, coordinator vẫn truyền `order = {}` xuống các agent sau thay vì dừng pipeline, để không bao giờ thiếu file output cho 1 case.
+`Coordinator.process_case()`: `order_seller_agent.run()` → `delivery_agent.run()` (đọc thẳng `orders` qua `DataStore`, không phụ thuộc Order & Seller) và `payment_agent.run(..., order_facts.item_total, order_facts.freight_total)` (cần tổng tiền do Order & Seller tính) → `policy_agent.run(order_facts, delivery_facts, payment_facts)` gọi `policy_rules.decide()` (rule engine thuần Python) → `output_builder.build_output()` gộp thành payload → `verifier_agent.run()` kiểm schema (`pydantic`) + tra ngược từng evidence ID vào `DataStore`, **raise lỗi nếu sai thay vì âm thầm ghi file bẩn**. `run_pipeline.py` ở root gọi `Coordinator` cho từng file trong `input/`, ghi `output/EC_xxx.json`, và ghi `logging/metadata.json` (model, thời gian chạy, số case thành công/fail).
+
+Về phần điều phối nhóm: khi phát hiện repo có 4 nhánh (`main` của tôi, `nhi`, `hoang`, `feature/payment_agent_phuc`) với 4 kiến trúc code khác nhau hoàn toàn, không thể merge tự động — quyết định dựa vào điểm thật đã nộp của từng nhánh (nhánh `main` báo 100.00/100, các nhánh khác 92-95) để chọn `main` làm bản nộp cuối, giữ nguyên các nhánh khác không xoá.
 
 ### Input, output và contract
 
 | Thành phần | Mô tả |
 | ------------ | ------- |
-| Input | `input/EC_xxx.json` theo schema: `case_id`, `opened_at`, `customer_request.claimed_order_id`, `policy_version` |
-| Output | `output/EC_xxx.json` theo schema mục 6 README (assessment, affected_entities, root_cause_analysis, evidence_ids, financial_resolution, resolution_actions) |
-| Module phụ thuộc | Order & Seller Agent, Payment Agent, Delivery Agent, Policy Agent, Verifier Agent |
-| Module sử dụng output | Verifier Agent (kiểm tra cuối), quy trình nộp bài (zip `output/`) |
-| Điều kiện lỗi cần xử lý | `claimed_order_id` không tồn tại trong `orders.csv`; agent con timeout hoặc trả evidence sai định dạng |
+| Input | `input/EC_xxx.json`: `case_id`, `opened_at`, `customer_request.claimed_order_id`, `policy_version` |
+| Output | `output/EC_xxx.json` theo schema mục 6 README, validate bằng `src/schema.py` (`CaseOutput`, pydantic) |
+| Module phụ thuộc | `order_seller_agent`, `delivery_agent`, `payment_agent`, `policy_agent`, `verifier_agent`, `output_builder`, `data_store` |
+| Module sử dụng output | Verifier Agent (gác cổng cuối), quy trình nộp bài (nén `output/` thành zip) |
+| Điều kiện lỗi cần xử lý | `claimed_order_id` không có trong `orders.csv` (`order_found=False`, các agent sau tự trả fact rỗng/`None` hợp lệ, không crash); Verifier phát hiện vấn đề → case bị loại khỏi `output/` thay vì ghi file sai |
 
 ### Cách xác minh
 
 ```bash
-python -m src.run_pipeline
+python run_pipeline.py
 python -c "import json,glob; n=[json.load(open(f,encoding='utf-8')) for f in sorted(glob.glob('output/EC_*.json'))]; print(len(n))"
 ```
 
-- **Kết quả mong đợi:** Đúng 50 file `output/EC_001.json`..`EC_050.json`, mỗi file parse JSON không lỗi, `logging/trace.jsonl` có log cho cả 50 case.
-- **Kết quả thực tế:** Console in `Done: 50/50 cases written to .../output`; script parse 50 file không lỗi (in ra `50`); `logging/trace.jsonl` 550 dòng (50 case × 11 sự kiện/case), 0 dòng `"level": "warning"`, 0 dòng `"level": "error"`.
-- **Artifact/log:** `output/EC_001.json`..`EC_050.json`, `logging/trace.jsonl`.
+- **Kết quả mong đợi:** 50 file `output/EC_001.json`..`EC_050.json`, `logging/metadata.json` ghi `succeeded: 50, failed: 0`.
+- **Kết quả thực tế:** Chạy lại thành công, in ra `50`; `metadata.json` xác nhận `succeeded: 50, failed: 0`; thời gian chạy 278.3 giây (tuần tự, không song song hoá — điểm có thể cải thiện thêm nếu có thời gian).
+- **Artifact/log:** `output/EC_001.json`..`EC_050.json`, `logging/trace.jsonl`, `logging/metadata.json`.
 
 ## 5. Một quyết định kỹ thuật quan trọng
 
-- **Bối cảnh:** Chọn cách điều phối giữa các agent domain (Order & Seller, Payment, Delivery) — chạy tuần tự hay song song trước khi vào Policy Agent.
-- **Các phương án đã cân nhắc:** (1) Chạy song song 3 agent domain rồi gộp kết quả (giảm latency vì có gọi LLM); (2) Chạy tuần tự, mỗi agent nhận thẳng output của agent trước làm input.
-- **Phương án đã chọn:** Tuần tự (Order & Seller → Payment → Delivery → Policy → Verifier).
-- **Lý do:** Delivery Agent cần `seller_violations` do Order & Seller Agent tính (để phân biệt `late_delivery_seller` vs `late_delivery_logistics`), nên có phụ thuộc dữ liệu thật, không độc lập hoàn toàn. Tuần tự cũng cho `trace.jsonl` thứ tự sự kiện rõ ràng, dễ debug trong khung thời gian thi giới hạn hơn là quản lý state đồng bộ giữa các luồng song song.
-- **Bằng chứng quyết định phù hợp:** Chạy thật 50 case không có case nào bị thiếu field do race condition; `trace.jsonl` mỗi case có đúng 1 khối 11 sự kiện liên tục theo đúng thứ tự agent.
+- **Bối cảnh:** 4 thành viên trong nhóm mỗi người tự build 1 pipeline hoàn chỉnh trên nhánh git riêng (`main`, `nhi`, `hoang`, `feature/payment_agent_phuc`) trong lúc thi, không biết nhánh nào đúng/tốt hơn cho tới khi có điểm thật.
+- **Các phương án đã cân nhắc:** (1) Cố merge code của các nhánh lại thành 1 bản duy nhất; (2) Chọn nguyên 1 nhánh có điểm thật cao nhất làm bản nộp, không merge.
+- **Phương án đã chọn:** (2) — chọn nguyên nhánh `main` (100.00/100).
+- **Lý do:** 4 nhánh có cấu trúc file hoàn toàn khác nhau (`coordinator_agent.py` vs `coordinator.py`, `data_loader.py` vs `data_store.py`...), merge tự động chắc chắn conflict và tốn thời gian sửa tay trong lúc gần hết giờ thi hơn là so điểm thật rồi chọn thẳng nhánh tốt nhất.
+- **Bằng chứng quyết định phù hợp:** Nhánh `main` có điểm nộp thật 100.00/100 (cao nhất trong 4 nhánh, nhánh `nhi` chỉ 95.59); tự chạy lại `main` xác nhận cấu trúc/logic đúng như tài liệu, không phát sinh lỗi.
 
 ## 6. Một lỗi hoặc blocker đã xử lý
 
-- **Triệu chứng/lỗi nguyên văn:**
-
-  ```text
-  Traceback (most recent call last):
-    File "...\src\run_pipeline.py", line 11, in <module>
-      from . import trace_logger
-  ImportError: attempted relative import with no known parent package
-  ```
-
-- **Lệnh hoặc bước tái hiện:** `python src/run_pipeline.py` (chạy trực tiếp file, từ thư mục gốc repo).
-- **Nguyên nhân gốc:** Toàn bộ module trong `src/` dùng relative import (`from . import ...`, `from .. import ...`) để dùng chung `data_loader`/`llm_client`/`trace_logger` giữa `src/` và `src/agents/`. Khi chạy `python src/run_pipeline.py` như 1 script rời, Python không coi `src` là package nên relative import thất bại.
-- **Cách xử lý:** Thêm `src/__init__.py` và `src/agents/__init__.py`, quy định chạy pipeline bằng `python -m src.run_pipeline` từ thư mục gốc repo (đã ghi trong docstring đầu file `run_pipeline.py`).
-- **Cách xác minh sau khi sửa:** Chạy `python -m src.run_pipeline` → in đủ 50 dòng `EC_xxx.json -> <primary_issue> (confidence=...)` và dòng cuối `Done: 50/50 cases written to .../output`.
-- **Điều học được:** Package Python dùng relative import bắt buộc phải chạy bằng `-m` từ thư mục cha, không thể chạy trực tiếp file con — cần ghi rõ trong docstring/README nội bộ để đồng đội không gặp lại lỗi này.
+- **Triệu chứng/lỗi nguyên văn:** Không phải lỗi code — mà là phát hiện qua `git fetch`/`git log --graph --all` giữa chừng thi: repo có 4 nhánh phân kỳ, mỗi nhánh chứa 1 bộ code + `output/` + `architecture.md` khác nhau, không nhánh nào biết về 3 nhánh kia.
+- **Lệnh hoặc bước tái hiện:** `git branch -a`, `git log --graph --oneline --all --decorate -25`.
+- **Nguyên nhân gốc:** Cả nhóm làm việc song song trên cùng repo mà không thống nhất trước 1 nhánh chung để cùng push — mỗi người tự tạo nhánh/commit riêng khi thấy pipeline của mình chạy được.
+- **Cách xử lý:** Không sửa code các nhánh khác; chỉ đối chiếu điểm thật đã nộp của từng nhánh (dựa trên số liệu thành viên báo lại), xác nhận `main` cao nhất, rồi thống nhất cả nhóm dùng `main` làm bản nộp cuối — các nhánh khác giữ nguyên, không xoá, để có thể tham khảo lại nếu cần.
+- **Cách xác minh sau khi sửa:** `git checkout main && git pull`, chạy lại `run_pipeline.py` xác nhận 50/50 case thành công, cấu trúc evidence/entity khớp đúng bản đã nộp điểm 100.
+- **Điều học được:** Với repo nhóm chấm điểm theo thời gian thực, nên thống nhất **1 nhánh chung duy nhất** để push ngay từ đầu, tránh tình trạng 4 người 4 bản không ai biết bản nào đang là "chính thức" cho tới phút chót.
 
 Nếu chưa xử lý xong:
 
-- **Phạm vi bị ảnh hưởng:** [Module/artifact.]
-- **Những gì đã loại trừ:** [Các giả thuyết đã kiểm tra.]
-- **Bước tiếp theo:** [Hành động có thể kiểm chứng.]
+- **Phạm vi bị ảnh hưởng:** Không còn — đã chốt `main` làm bản nộp, các nhánh khác không ảnh hưởng tới zip nộp cuối.
+- **Những gì đã loại trừ:** Đã loại trừ khả năng merge code (rủi ro conflict cao hơn lợi ích, không kịp thời gian).
+- **Bước tiếp theo:** Không còn cần thiết cho bản nộp; có thể tham khảo thêm ý tưởng song song hoá (`ThreadPoolExecutor`) từ nhánh `nhi` để giảm 278s xuống dưới 1 phút nếu nhóm muốn tối ưu thêm sau khi đã có điểm tốt.
 
 ## 7. Hiểu biết về luồng end-to-end
 
@@ -110,11 +104,11 @@ Giải thích ngắn gọn bằng lời của bạn:
 
 **Câu trả lời:**
 
-1. `run_pipeline.py` đọc lần lượt 50 file trong `input/`, mỗi file gọi `coordinator_agent.process_case()`. Coordinator lấy `claimed_order_id` đưa cho Order & Seller Agent (tra `orders`/`order_items`/`sellers`), đưa `items` cho Payment Agent (tra `order_payments`, đối soát tổng), đưa `order` + `seller_violations` cho Delivery Agent (so sánh timestamp), rồi đưa toàn bộ facts cho Policy Agent (áp bảng quy tắc `EC_POLICY_V1`) và cuối cùng Verifier Agent (build JSON, cắt giới hạn, lọc evidence không grounded) trước khi tôi ghi ra `output/EC_xxx.json`.
-2. Evidence ID (`order:`, `item:`, `payment:`, `seller:`, `policy:`) phải trỏ đúng về dòng dữ liệu thật trong CSV — Verifier Agent dùng `schemas.evidence_id_is_grounded()` để loại bỏ id sai định dạng hoặc không tồn tại (false positive) trước khi ghi file, nên khi chấm điểm có thể đối chiếu ngược từng evidence với CSV gốc để biết tôi có "bịa" hay không.
-3. Ngoài parse đúng schema, Verifier còn cắt số lượng theo giới hạn (tối đa 5 entity/set, 10 evidence, 3 root cause, 3 responsible party, 5 action), ép `confidence` về `[0,1]`, kiểm số tiền không âm — và quan trọng nhất là gọi lại `data_loader` để xác nhận từng evidence ID tồn tại thật, không chỉ đúng regex.
-4. Dùng chung 50 case và `policy_version = EC_POLICY_V1` để mọi thành viên/agent áp cùng 1 bảng luật, kết quả có thể so sánh và tổng hợp được giữa các lần chạy — nếu mỗi lần chạy dùng policy khác nhau thì không thể đối chiếu tay hay chấm điểm nhất quán.
-5. Case được coi là xử lý đúng khi: JSON hợp lệ theo schema, `primary_issue`/`confidence` đúng bảng quy tắc, `affected_entities` đầy đủ và đúng giới hạn, `root_cause`/`responsible_parties` khớp cause code, `evidence_ids` grounded, và `financial_resolution`/`resolution_actions` khớp số tiền tính từ CSV — đúng 6 tiêu chí trọng số ở README mục 8. Với 50 case đã chạy, tôi xác minh tầng hệ thống (đủ 50 file, JSON hợp lệ, trace sạch); độ đúng nghiệp vụ chi tiết từng case do các bạn giữ agent domain tương ứng tự đối chiếu tay.
+1. `run_pipeline.py` đọc từng file `input/EC_xxx.json`, gọi `Coordinator.process_case()`. Coordinator lấy `claimed_order_id` cho Order & Seller Agent (status/item/seller/`late_seller_ids`), Delivery Agent (so `delivered_customer_date` vs `estimated_delivery_date`), Payment Agent (tổng payment); cả 3 bộ fact đưa cho Policy Agent áp `EC_POLICY_V1` (if/elif thuần Python trong `policy_rules.py`) ra `Decision`; `output_builder.build_output()` gộp thành payload; Verifier Agent kiểm schema + evidence tồn tại thật rồi mới cho ghi `output/EC_xxx.json`.
+2. Evidence ID phải trỏ đúng dòng dữ liệu thật — Verifier dùng regex tách từng loại (`order:`/`item:`/`payment:`/`seller:`/`policy:`) rồi tra ngược `DataStore` xác nhận tồn tại, không chỉ đúng định dạng. Root-cause code lấy từ bảng `ROOT_CAUSE_BY_ISSUE` cố định 1-1 với `primary_issue`, không tự sinh mã mới.
+3. Verifier còn validate toàn bộ schema bằng `pydantic` (`CaseOutput.model_validate`), và **raise lỗi khiến case bị loại khỏi `output/`** nếu có vấn đề — khác với cách xử lý "ghi file kèm cảnh báo" tôi từng làm ở bản nháp trước đó; cách của `main` khắt khe hơn, không có case nào lọt ra ngoài nếu chưa qua kiểm chứng.
+4. Dùng chung 50 case + `policy_version=EC_POLICY_V1` để mọi agent áp cùng 1 bộ luật cố định — nếu khác nhau giữa các lần chạy, không thể so sánh/đối chiếu điểm giữa các nhánh git khác nhau như tôi vừa làm ở mục 5-6.
+5. Case đúng khi khớp 6 tiêu chí trọng số README mục 8. Điểm đặc biệt phát hiện được: `primary_issue` đúng 100% (đã verify tay) không tự động cho 100 điểm — `confidence` phải phản ánh đúng độ chắc chắn thật (1.0 khi rule match sạch, không hạ thấp "cho khiêm tốn") thì mới đạt điểm tối đa ở tiêu chí Đánh giá case; nộp thật của nhóm xác nhận tổng 100.00/100.
 
 ## 8. Cam kết của thành viên
 

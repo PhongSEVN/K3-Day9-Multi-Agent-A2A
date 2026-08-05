@@ -16,77 +16,77 @@
 
 | Module/deliverable | File/hàm phụ trách | Input nhận vào | Output bàn giao | Trạng thái |
 | ------------------- | -------------------- | ---------------- | ------------------ | ------------ |
-| Payment Agent — đối soát `order_payments.csv` với tổng item + freight từ `order_items.csv` | `src/agents/payment_agent.py` | `order_id` + `items[]` (từ Order & Seller Agent) + `data/olist_order_payments_dataset.csv` | dict `payments[]`, `item_total_brl`, `freight_total_brl`, `payment_total_brl`, `reconciled` chuyển cho Policy Agent | Hoàn thành |
-| Tính `financial_resolution` (đầu vào thô, chưa quyết định refund) | Hàm `analyze()` trong `payment_agent.py`, làm tròn 2 chữ số thập phân bằng `round(..., 2)` | Payment rows + item rows theo order | Số liệu tài chính dùng để Verifier build `financial_resolution` | Hoàn thành |
+| Payment Agent — tra `order_payments` qua `DataStore`, tính tổng `payment_total`, log so sánh với `item_total+freight_total` để audit | `src/agents/payment_agent.py` (`PaymentAgent.run()`) | `order_id`, `item_total`, `freight_total` (từ Order & Seller Agent) | `PaymentFacts` (dataclass: `payments[]`, `payment_total`) chuyển cho Policy Agent | Hoàn thành |
+| Nhánh riêng `feature/payment_agent_phuc` để phát triển/test độc lập trước khi thống nhất dùng nhánh `main` | Git branch, `individual_01345_NguyenThanhPhuc.md` | Code payment agent tự viết | Đã merge kiến thức/đối chiếu vào bản `main` cuối cùng của nhóm | Hoàn thành |
 
 ### Việc hỗ trợ ngoài phạm vi chính
 
 | Hoạt động | Thành viên/module được hỗ trợ | Kết quả |
 | ---------- | ------------------------------- | --------- |
-| [Debug/tích hợp/tài liệu] | [Tên hoặc module] | [Kết quả và bằng chứng] |
+| Merge nhánh `origin/hoang` vào nhánh của mình để đối chiếu logic Delivery Agent | Hoàng | Xác nhận payment/delivery facts độc lập nhau, không cần sửa gì thêm khi Coordinator gộp |
 
 ## 3. Kết quả theo vai trò
 
 | Nhiệm vụ đã thực hiện | File/hàm/artifact liên quan | Kết quả bàn giao | Cách xác minh |
 | ----------------------- | ------------------------------ | ------------------- | --------------- |
-| Đối soát payment case EC_004 (2 dòng payment) | `src/agents/payment_agent.py` | `order_id` từ case EC_004 | `item_total_brl=179.9`, `freight_total_brl=32.06`, `payment_total_brl=211.96`, `reconciled=true` | `python -m src.run_pipeline` rồi mở `output/EC_004.json` |
+| Tính tổng payment case EC_004 (2 dòng payment) | `src/agents/payment_agent.py` | `payment_total = 211.96` | `python run_pipeline.py` rồi mở `output/EC_004.json` |
 
 Nêu một output cụ thể mà phần việc của bạn tạo ra hoặc giúp xác minh:
 
-Case `EC_004.json` (khách hỏi "nhiều dòng thanh toán, sợ bị thu trùng"): order có 2 payment row, tổng `payment_value = 211.96` khớp `item_total (179.9) + freight_total (32.06) = 211.96` với sai số 0 BRL (≤ 0.10 theo README) → `reconciled=True`. Policy Agent dùng cờ này kết luận `primary_issue = "valid_split_payment"`, `recommended_refund_brl = 0.0`, `action = "explain_valid_split_payment"` — đúng ý nghĩa "không phải bị thu trùng, chỉ là trả góp nhiều dòng khớp tổng".
+Case `EC_004.json` (khách hỏi "nhiều dòng thanh toán, sợ bị thu trùng"): order có 2 dòng `order_payments` (174.98 + 36.98 = 211.96). `PaymentAgent.run()` trả `payment_total=211.96`; hàm `_is_reconciled()` trong `policy_rules.py` (Policy Agent gọi, không phải tôi tự tính cờ) so `abs(211.96 - (179.9+32.06)) = 0.0 ≤ 0.10 BRL` → khớp. Policy Agent kết luận `primary_issue="valid_split_payment"`, `recommended_refund_brl=0.0`, `action="explain_valid_split_payment"` — khớp `output/EC_004.json` thực tế.
 
 ## 4. Giải thích phần kỹ thuật đã thực hiện
 
 ### Vấn đề cần giải quyết
 
-Olist không có refund ledger hay transaction ID, nên Payment Agent phải tự đối soát: tổng `payment_value` theo `order_id` so với tổng giá item + freight. Đây là căn cứ để Policy Agent phân biệt `valid_split_payment` (đơn giao đúng hạn nhưng có nhiều payment row khớp tổng) với các case cần hoàn tiền.
+Olist không có refund ledger hay transaction ID, nên phải tự đối soát: tổng `payment_value` theo `order_id` so với tổng giá item + freight. Đây là căn cứ cho Policy Agent phân biệt `valid_split_payment` (nhiều dòng thanh toán nhưng khớp tổng, không phải thu trùng) khỏi các case cần hoàn tiền thật.
 
 ### Cách triển khai
 
-`data_loader.get_payments(order_id)` trả toàn bộ dòng `order_payments.csv` khớp `order_id`, sắp theo `payment_sequential`. `payment_agent.analyze()` tính `item_total = round(sum(price), 2)`, `freight_total = round(sum(freight_value), 2)` từ `items` do Order & Seller Agent đưa sang, `payment_total = round(sum(payment_value), 2)` từ các dòng payment, rồi so `abs(payment_total - (item_total + freight_total)) <= 0.10` (hằng số `RECONCILE_TOLERANCE_BRL = 0.10` đúng README mục 4) để set cờ `reconciled`. Việc build evidence ID `payment:<order_id>:<payment_sequential>` để Verifier Agent làm ở bước cuối dựa trên danh sách `payments[]` tôi trả về, tránh 2 module tự sinh ID trùng logic nhưng lệch dữ liệu.
+`PaymentAgent.run(case_id, store, order_id, item_total, freight_total)`: `store.get_payments(order_id)` trả toàn bộ dòng payment của order; lặp từng dòng, `value = float(row["payment_value"]) if pd.notna(row["payment_value"]) else 0.0` (guard giá trị thiếu), cộng dồn vào `payment_total`, mỗi dòng làm tròn 2 chữ số ngay khi tạo `PaymentFact`. Điểm quan trọng: **agent của tôi không tự tính cờ "reconciled"** — chỉ trả tổng tiền + danh sách payment thô; việc so khớp `abs(payment_total - (item_total+freight_total)) <= AMOUNT_TOLERANCE_BRL` (hằng số 0.10 trong `src/config.py`) được `_is_reconciled()` trong `policy_rules.py` làm, để logic đối soát nằm 1 chỗ duy nhất (rule engine), Payment Agent chỉ là nguồn dữ liệu thô đáng tin cậy.
 
 ### Input, output và contract
 
 | Thành phần | Mô tả |
 | ------------ | ------- |
-| Input | `order_id` (từ Coordinator/Order & Seller Agent), `olist_order_payments_dataset.csv`, `olist_order_items_dataset.csv` |
-| Output | `payment_ids`, `item_total_brl`, `freight_total_brl`, `payment_total_brl`, cờ đối soát (khớp/không khớp trong sai số 0.10 BRL) |
-| Module phụ thuộc | Order & Seller Agent (cung cấp item list/`order_id` hợp lệ) |
-| Module sử dụng output | Policy Agent (áp `valid_split_payment` hoặc tính `recommended_refund_brl`), Verifier Agent |
-| Điều kiện lỗi cần xử lý | Order không có payment row; order không có item row (`item_total_brl`, `freight_total_brl` = `0.0` theo mục 6 README) |
+| Input | `order_id`, `item_total`, `freight_total` (từ Order & Seller Agent qua Coordinator), đọc `order_payments` qua `DataStore` |
+| Output | `PaymentFacts(payments: list[PaymentFact], payment_total: float)`, có property `payment_count` |
+| Module phụ thuộc | `src/data_store.py`, Order & Seller Agent (cần `item_total`/`freight_total` trước) |
+| Module sử dụng output | Policy Agent (`_is_reconciled()`, `payment_count >= 2` để xét `valid_split_payment`), `output_builder.py` (build `payment_ids`, `financial_resolution.payment_total_brl`) |
+| Điều kiện lỗi cần xử lý | Order không có payment row → `payments=[]`, `payment_total=0.0` (không crash); `payment_value` thiếu/`NaN` ở 1 dòng → tính là `0.0` cho dòng đó, không loại cả dòng |
 
 ### Cách xác minh
 
 ```bash
-python -m src.run_pipeline
+python run_pipeline.py
 ```
 
-- **Kết quả mong đợi:** Case có ≥2 payment row và tổng khớp trong 0.10 BRL phải ra `valid_split_payment`, refund 0; case số tiền không khớp hoặc giao trễ phải rẽ nhánh khác.
-- **Kết quả thực tế:** 50/50 case chạy xong; 9 case (`EC_004, EC_006, EC_014, EC_018, EC_020, EC_025, EC_030, EC_038, EC_046`) ra `primary_issue = "valid_split_payment"`, `recommended_refund_brl = 0.0`, đúng số payment ≥ 2 dòng khi tôi tra tay `order_payments.csv` cho `EC_004`.
-- **Artifact/log:** `output/EC_004.json`, dòng `agent: "payment_agent"` trong `logging/trace.jsonl`.
+- **Kết quả mong đợi:** Case có ≥2 payment row và tổng khớp trong 0.10 BRL phải ra `valid_split_payment`, refund 0.
+- **Kết quả thực tế:** Tự chạy lại 50/50 case; 9 case ra `valid_split_payment` với `payment_count >= 2` và `recommended_refund_brl = 0.0`, khớp tay khi tra `order_payments.csv` cho `EC_004` (174.98 + 36.98 = 211.96).
+- **Artifact/log:** `output/EC_004.json`, dòng `agent: "payment_agent"` trong `logging/trace.jsonl` (`tool_result` có `payment_total`, `expected_total`).
 
 ## 5. Một quyết định kỹ thuật quan trọng
 
-- **Bối cảnh:** Cách so khớp `payment_total_brl` với `item_total_brl + freight_total_brl` khi có nhiều payment row — vì payment/price là số thực (float), so bằng tuyệt đối (`==`) dễ sai do sai số dấu phẩy động.
-- **Các phương án đã cân nhắc:** (1) So bằng tuyệt đối sau khi `round(..., 2)` cả hai vế; (2) Tính hiệu tuyệt đối `abs(payment_total - expected_total)` và so với ngưỡng dung sai `0.10` BRL như README quy định.
-- **Phương án đã chọn:** Phương án (2) — `abs(payment_total - expected_total) <= 0.10`.
-- **Lý do:** README mục 4 quy định rõ "sai số 0.10 BRL", tức đây không phải so khớp tuyệt đối mà là dung sai nghiệp vụ (làm tròn installment, phí phát sinh nhỏ); so bằng tuyệt đối sau `round` vẫn có thể trượt nếu 2 vế lệch đúng 0.01-0.09 BRL hợp lệ, sẽ bị coi nhầm là "không khớp".
-- **Bằng chứng quyết định phù hợp:** Case `EC_004`: `payment_total_brl=211.96` so `item_total_brl+freight_total_brl=211.96` — hiệu 0.0, nằm trong ngưỡng, `reconciled=True`, khớp đúng kỳ vọng.
+- **Bối cảnh:** Ai chịu trách nhiệm tính cờ "payment có khớp tổng item+freight hay không" — để ngay trong Payment Agent, hay để Policy Agent (rule engine) tính?
+- **Các phương án đã cân nhắc:** (1) Payment Agent tự tính và trả sẵn cờ `reconciled: bool`; (2) Payment Agent chỉ trả số liệu thô (`payment_total`, danh sách `payments`), Policy Agent tự so khớp khi cần.
+- **Phương án đã chọn:** (2).
+- **Lý do:** Ngưỡng dung sai 0.10 BRL là 1 phần của **chính sách** (`EC_POLICY_V1`), không phải sự thật dữ liệu — để nó sống trong `policy_rules.py` cùng các hằng số khác (`AMOUNT_TOLERANCE_BRL` trong `config.py`) giúp toàn bộ logic nghiệp vụ nằm 1 chỗ, dễ audit/đổi version chính sách sau này mà không phải sửa Payment Agent.
+- **Bằng chứng quyết định phù hợp:** 50/50 case chạy đúng; log `tool_result` của Payment Agent luôn có `expected_total` để tôi tự đối chiếu tay mà không cần đọc code Policy Agent, tách bạch rõ ràng "tôi cung cấp số liệu" khỏi "ai quyết định số liệu đó nghĩa là gì".
 
 ## 6. Một lỗi hoặc blocker đã xử lý
 
-- **Triệu chứng/lỗi nguyên văn:** Không phải crash mà là 1 hành vi cạnh cần kiểm tra: khi order không có item lẫn payment row (`item_total=freight_total=payment_total=0.0`), công thức `abs(0 - 0) <= 0.10` cho `reconciled=True` một cách "tình cờ", có thể bị hiểu nhầm là case đã đối soát thành công.
-- **Lệnh hoặc bước tái hiện:** Test thủ công case giả `claimed_order_id="ORDER_ID_KHONG_TON_TAI"` qua `coordinator_agent.process_case()`, xem `payment_agent` log trong `logging/trace.jsonl`.
-- **Nguyên nhân gốc:** `reconciled` chỉ là điều kiện cần (README rule 5 còn yêu cầu `len(payments) >= 2`), nên `Policy Agent` không tự nhận case rỗng là `valid_split_payment` — nhưng bản thân cờ `reconciled=True` khi rỗng vẫn có thể gây hiểu nhầm nếu đọc riêng log `payment_agent` mà không đọc `policy_agent`.
-- **Cách xử lý:** Xác nhận với Nhi (Policy Agent) rằng rule 5 luôn kiểm thêm `len(payments) >= 2` trước khi dùng `reconciled`, nên trường hợp rỗng tự động rơi xuống rule 6 (`unsupported_late_claim`) chứ không bị nhận nhầm — không cần sửa `payment_agent.py`, chỉ cần ghi rõ điều kiện phụ thuộc này trong `architecture.md` (mục 5, dòng "Payment Agent") để tránh member khác hiểu nhầm ý nghĩa cờ `reconciled` khi đọc riêng.
-- **Cách xác minh sau khi sửa:** Chạy lại case giả — `logging/trace.jsonl` cho thấy `payment_agent.reconcile` log `reconciled: true` với `payment_count: 0`, nhưng `policy_agent.rule_decision` vẫn ra `primary_issue: "unsupported_late_claim"` (không phải `valid_split_payment`) vì thiếu điều kiện `len(payments) >= 2` — đúng như thiết kế.
-- **Điều học được:** Một cờ boolean đơn lẻ (`reconciled`) không nên được đọc/diễn giải độc lập khỏi điều kiện đi kèm của nó trong rule engine; cần ghi rõ trong tài liệu để tránh member khác dùng lại cờ này sai ngữ cảnh.
+- **Triệu chứng/lỗi nguyên văn:** Không phải crash — câu hỏi cạnh: order không có payment row nào (`payments=[]`, `payment_total=0.0`) thì có bị Policy Agent hiểu nhầm là "khớp tổng" (`0.0 == 0.0`) một cách tình cờ không?
+- **Lệnh hoặc bước tái hiện:** Test thủ công `PaymentAgent().run(case_id, store, "ORDER_ID_KHONG_TON_TAI", 0.0, 0.0)`.
+- **Nguyên nhân gốc:** `_is_reconciled(0.0, 0.0, 0.0)` thật sự trả `True` (0 ≈ 0) — nhưng đây không phải bug: `valid_split_payment` còn yêu cầu thêm `payment_count >= 2` (trong `policy_rules.decide()`), nên order rỗng (`payment_count=0`) không bao giờ rơi vào nhánh đó, tự động rớt xuống `unsupported_late_claim` hoặc fallback.
+- **Cách xử lý:** Xác nhận với Nhi (giữ `policy_rules.py`) rằng điều kiện `payment_count >= 2` luôn đi kèm `_is_reconciled()`, không dùng cờ khớp/không khớp độc lập — không cần sửa `payment_agent.py`.
+- **Cách xác minh sau khi sửa:** Test case giả xác nhận `payment_total=0.0` nhưng `primary_issue` không bao giờ là `valid_split_payment` khi `payment_count < 2`.
+- **Điều học được:** Một điều kiện toán học đúng cục bộ (`0 == 0`) có thể gây hiểu nhầm nếu tách khỏi điều kiện đi kèm của nó trong rule engine — luôn đọc trọn vẹn nhánh `if` chứ không chỉ 1 biểu thức con.
 
 Nếu chưa xử lý xong:
 
-- **Phạm vi bị ảnh hưởng:** [Module/artifact.]
-- **Những gì đã loại trừ:** [Các giả thuyết đã kiểm tra.]
-- **Bước tiếp theo:** [Hành động có thể kiểm chứng.]
+- **Phạm vi bị ảnh hưởng:** [Không có — đã xử lý xong.]
+- **Những gì đã loại trừ:** [N/A]
+- **Bước tiếp theo:** [N/A]
 
 ## 7. Hiểu biết về luồng end-to-end
 
@@ -100,11 +100,11 @@ Giải thích ngắn gọn bằng lời của bạn:
 
 **Câu trả lời:**
 
-1. Sau khi Order & Seller Agent xác định `items`, tôi lấy `order_id` đó tra `order_payments.csv`, tính 3 tổng (item/freight/payment) và cờ `reconciled`, đưa cho Delivery Agent (không cần dữ liệu của tôi) và Policy Agent (cần cả 3 tổng + cờ) để chọn `primary_issue`; cuối cùng Verifier đóng gói `financial_resolution` từ đúng 3 số tôi tính, không tính lại.
-2. Evidence `payment:<order_id>:<payment_sequential>` chỉ hợp lệ nếu dòng payment đó thật sự tồn tại trong `order_payments.csv` — Verifier gọi lại `data_loader.payment_exists()` để xác nhận, nên nếu tôi generate sai `payment_sequential` (ví dụ đánh số từ 0 thay vì 1 như CSV gốc) thì evidence sẽ bị loại, ảnh hưởng trực tiếp điểm evidence 15%.
-3. Verifier còn kiểm số tiền không âm và làm tròn đúng 2 chữ số — quan trọng với phần của tôi vì `item_total_brl`/`freight_total_brl`/`payment_total_brl` đều do tôi tính, sai làm tròn ở đây kéo sai luôn `recommended_refund_brl` (20% trọng số).
-4. Cùng `policy_version = EC_POLICY_V1` đảm bảo ngưỡng dung sai 0.10 BRL tôi dùng để đối soát là thống nhất cho cả 50 case — nếu policy đổi ngưỡng giữa các lần chạy, cùng 1 case có thể lúc `reconciled=True` lúc `False`, không tái lập được.
-5. Case thuộc phần của tôi (`valid_split_payment`, `unsupported_late_claim`, hoặc refund tính từ freight/payment) đúng khi 3 số `item_total_brl/freight_total_brl/payment_total_brl` khớp CSV gốc — tôi đã đối chiếu tay case `EC_004`: 2 dòng payment 174.98 + 36.98 (tổng 211.96) khớp `item_total (179.9) + freight_total (32.06)`.
+1. Sau khi Order & Seller Agent tính `item_total`/`freight_total`, Coordinator đưa 2 số đó cho tôi cùng `order_id`; tôi tra `order_payments` trả `payment_total` + danh sách dòng payment. Policy Agent nhận cả 3 bộ fact (order/seller, delivery, payment), tự so khớp và ra `primary_issue`; `output_builder.py` build entity/evidence từ đúng dữ liệu tôi trả, Verifier kiểm rồi Coordinator ghi file.
+2. Evidence `payment:<order_id>:<seq>` chỉ hợp lệ nếu dòng đó thật sự tồn tại trong `order_payments.csv` — Verifier tra ngược `DataStore.payment_exists()`. Nếu tôi đánh số `payment_sequential` sai so với CSV gốc, evidence bị loại và case bị Verifier raise lỗi, không được ghi ra `output/` — mất điểm evidence (15%) lẫn có thể mất trắng case đó (hard gate).
+3. Verifier còn validate toàn bộ payload qua `pydantic` (`CaseOutput`) — số tiền âm, sai kiểu dữ liệu, thiếu field đều bị bắt ở đây; case lỗi sẽ **không** có mặt trong `output/` (khác với thiết kế "ghi kèm cảnh báo" tôi từng thấy ở bản nháp khác của nhóm).
+4. Cùng `policy_version=EC_POLICY_V1` đảm bảo ngưỡng dung sai 0.10 BRL thống nhất cho toàn bộ 50 case và giữa các nhánh git khác nhau của nhóm — nếu không, kết quả không thể so sánh khi nhóm đối chiếu điểm giữa các bản.
+5. Case thuộc phần tôi đúng khi `payment_total`/`item_total`/`freight_total` khớp CSV gốc — tự đối chiếu tay `EC_004`: 174.98 + 36.98 = 211.96 khớp `179.9 + 32.06`. Nhóm đã nộp thật nhánh `main` và đạt **100.00/100**.
 
 ## 8. Cam kết của thành viên
 

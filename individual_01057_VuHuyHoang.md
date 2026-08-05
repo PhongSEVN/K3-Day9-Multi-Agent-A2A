@@ -16,77 +16,77 @@
 
 | Module/deliverable | File/hàm phụ trách | Input nhận vào | Output bàn giao | Trạng thái |
 | ------------------- | -------------------- | ---------------- | ------------------ | ------------ |
-| Delivery Agent — so sánh `order_delivered_customer_date` với `order_estimated_delivery_date`, tái dùng `seller_violations` để suy ra bên chịu trách nhiệm | `src/agents/delivery_agent.py` | `order` (dict từ Order & Seller Agent) + `seller_violations[]` | `late_delivery` (bool), `late_cause_candidate` chuyển cho Policy Agent | Hoàn thành |
-| Phân loại nguyên nhân ứng viên `late_delivery_seller` vs `late_delivery_logistics` | Hàm `analyze()` trong `delivery_agent.py` | Kết quả so sánh timestamp + cờ vi phạm seller | Root-cause candidate (không tự gán `cause_code`, để Policy Agent gán) | Hoàn thành |
+| Delivery Agent — so `order_delivered_customer_date` với `order_estimated_delivery_date` | `src/agents/delivery_agent.py` (`DeliveryAgent.run()`) | `order_id` (tự đọc `orders` qua `DataStore`, không phụ thuộc agent khác) | `DeliveryFacts` (dataclass: 3 timestamp + `delivered_after_estimate`) chuyển cho Policy Agent | Hoàn thành |
+| Nhánh `hoang` — tự build pipeline hoàn chỉnh độc lập để đối chiếu thiết kế với bản `main` | Git branch `origin/hoang` (4 commit: implement delivery agent → complete pipeline → make evidence issue-aware → restore entities + calibrate confidence) | Code + `output/` tự chạy | Xác nhận độc lập cùng 1 kết luận thiết kế evidence/confidence với `main` — tăng độ tin cậy trước khi nhóm chọn `main` làm bản nộp | Hoàn thành |
 
 ### Việc hỗ trợ ngoài phạm vi chính
 
 | Hoạt động | Thành viên/module được hỗ trợ | Kết quả |
 | ---------- | ------------------------------- | --------- |
-| [Debug/tích hợp/tài liệu] | [Tên hoặc module] | [Kết quả và bằng chứng] |
+| Tự thử nghiệm "scope evidence theo issue" rồi "restore lại entities đầy đủ + calibrate confidence" trên nhánh riêng | Toàn nhóm | Kết quả trùng khớp độc lập với phát hiện trên nhánh `main`/`nhi`: entity phải đầy đủ không điều kiện, evidence mới lọc theo trách nhiệm — dữ liệu chéo giúp nhóm tự tin chọn thiết kế cuối nhanh hơn |
 
 ## 3. Kết quả theo vai trò
 
 | Nhiệm vụ đã thực hiện | File/hàm/artifact liên quan | Kết quả bàn giao | Cách xác minh |
 | ----------------------- | ------------------------------ | ------------------- | --------------- |
-| Phân biệt giao trễ do logistics (không phải seller) cho case EC_009 | `src/agents/delivery_agent.py` | `order`, `seller_violations=[]` | `late_delivery=true`, `late_cause_candidate="late_delivery_logistics"` | `python -m src.run_pipeline` rồi mở `output/EC_009.json` |
+| Xác định case EC_009 giao trễ nhưng không phải lỗi seller | `src/agents/delivery_agent.py` | `delivered_after_estimate=True` | `python run_pipeline.py` rồi mở `output/EC_009.json` |
 
 Nêu một output cụ thể mà phần việc của bạn tạo ra hoặc giúp xác minh:
 
-Case `EC_009.json` (order `3aaee056441dcae251f360b1c71a7279`): `order_delivered_customer_date` muộn hơn `order_estimated_delivery_date`, nhưng Order & Seller Agent không phát hiện seller nào vi phạm `shipping_limit_date` (`seller_violations=[]`) → tôi trả `late_cause_candidate="late_delivery_logistics"`. Policy Agent dùng cờ này ra `primary_issue="late_delivery_logistics"`, `responsible_parties=[{"party_type":"logistics_provider","party_id":"LOGISTICS_PROVIDER"}]`, `recommended_refund_brl=12.36` (đúng bằng `freight_total_brl`) — khớp `output/EC_009.json` thực tế.
+Case `EC_009.json` (order `3aaee056441dcae251f360b1c71a7279`): `order_delivered_customer_date` muộn hơn `order_estimated_delivery_date` → `DeliveryFacts.delivered_after_estimate = True`. Vì Order & Seller Agent không tìm thấy seller nào vi phạm (`late_seller_ids=[]`), Policy Agent tự kết luận `primary_issue="late_delivery_logistics"` — bản thân Delivery Agent **không** quyết seller hay logistics chịu trách nhiệm, chỉ trả sự kiện "có trễ hay không". Khớp `output/EC_009.json` thực tế: `responsible_parties=[{"party_type":"logistics_provider","party_id":"LOGISTICS_PROVIDER"}]`, `recommended_refund_brl=12.36` (bằng `freight_total`).
 
 ## 4. Giải thích phần kỹ thuật đã thực hiện
 
 ### Vấn đề cần giải quyết
 
-Cùng một phản ánh "giao trễ" nhưng trách nhiệm khác nhau tùy timestamp thực tế: nếu carrier nhận hàng sau `shipping_limit_date` thì seller chịu trách nhiệm; nếu carrier nhận đúng hạn nhưng giao khách vẫn trễ so với `order_estimated_delivery_date` thì logistics chịu trách nhiệm; nếu giao không muộn hơn ước tính thì claim có thể bị bác bỏ (`unsupported_late_claim`).
+Cùng phản ánh "giao trễ" nhưng cần tách 2 câu hỏi độc lập: (1) đơn có thực sự giao muộn hơn ngày ước tính cho khách hay không (việc của tôi), và (2) nếu có, ai chịu trách nhiệm — seller bàn giao trễ cho carrier, hay carrier/logistics giao chậm dù seller đã bàn giao đúng hạn (việc của Policy Agent, dựa trên fact của cả tôi lẫn Order & Seller Agent).
 
 ### Cách triển khai
 
-`delivery_agent.analyze()` không tự đọc CSV — nhận thẳng dict `order` (đã có timestamp) từ Order & Seller Agent và `seller_violations` đã tính sẵn. Tôi parse `order_delivered_customer_date`/`order_estimated_delivery_date` bằng `pandas.to_datetime(..., errors="coerce")`, so trực tiếp giá trị (không đổi múi giờ, đúng lưu ý README mục 2) để có `late_delivery`. Nếu `late_delivery=True`, tôi không tự quyết seller/logistics chịu trách nhiệm mà chỉ nhìn `seller_violations`: có phần tử → `late_delivery_seller`, rỗng → `late_delivery_logistics`. Việc gán `cause_code` cụ thể (`SELLER_HANDOFF_AFTER_LIMIT`/`CARRIER_DELIVERED_AFTER_ESTIMATE`) và thứ tự ưu tiên so với `canceled_order_paid`/`unavailable_order_paid` để Policy Agent (Nhi) làm, vì cần biết cả `order_status`/payment mà tôi không có.
+`DeliveryAgent.run(case_id, store, order_id)` tự gọi `store.get_order(order_id)` — **không nhận `late_seller_ids` làm input**, hoàn toàn độc lập với Order & Seller Agent. Nếu order không tồn tại, trả `DeliveryFacts` với mọi field `None`. Nếu có: lấy `order_estimated_delivery_date`, `order_delivered_customer_date`, `order_delivered_carrier_date`; nếu cả `delivered_customer` và `estimated` đều `pd.notna()` thì `delivered_after_estimate = bool(delivered_customer > estimated)`, ngược lại (đơn chưa giao) để `None` (không phải `False` — `None` nghĩa là "chưa biết", `False` nghĩa là "biết chắc không trễ", 2 ý nghĩa khác nhau). Việc quyết seller hay logistics chịu trách nhiệm **hoàn toàn nằm trong `policy_rules.decide()`**: chỉ khi `delivery_facts.delivered_after_estimate is True` mới xét tiếp `order_facts.late_seller_ids` để rẽ nhánh — tôi không cần biết gì về seller cả.
 
 ### Input, output và contract
 
 | Thành phần | Mô tả |
 | ------------ | ------- |
-| Input | `order_id` (từ Order & Seller Agent), timestamp từ `olist_orders_dataset.csv` (`order_delivered_customer_date`, `order_estimated_delivery_date`, `order_delivered_carrier_date`), `shipping_limit_date` từ `olist_order_items_dataset.csv` |
-| Output | Cờ `late_delivery`, root-cause candidate (`late_delivery_seller` / `late_delivery_logistics` / không có) |
-| Module phụ thuộc | Order & Seller Agent (cung cấp item/seller/`shipping_limit_date` theo seller) |
-| Module sử dụng output | Policy Agent (chọn `primary_issue`, `responsible_parties`), Verifier Agent |
-| Điều kiện lỗi cần xử lý | Thiếu `order_delivered_customer_date` (đơn chưa giao); order nhiều seller với mốc `shipping_limit_date` khác nhau |
+| Input | `order_id`, đọc trực tiếp `orders` qua `DataStore` — không nhận fact từ agent khác |
+| Output | `DeliveryFacts(order_estimated_delivery_date, order_delivered_carrier_date, order_delivered_customer_date, delivered_after_estimate)` |
+| Module phụ thuộc | `src/data_store.py` |
+| Module sử dụng output | Policy Agent (`policy_rules.decide()` dùng `delivered_after_estimate` làm điều kiện rẽ nhánh chính) |
+| Điều kiện lỗi cần xử lý | `order_id` không tồn tại → mọi field `None`; đơn chưa giao (`delivered_customer_date` rỗng) → `delivered_after_estimate=None`, không bị hiểu nhầm là "không trễ" |
 
 ### Cách xác minh
 
 ```bash
-python -m src.run_pipeline
+python run_pipeline.py
 ```
 
-- **Kết quả mong đợi:** Case giao trễ có seller vi phạm phải ra `late_delivery_seller`; case giao trễ nhưng seller đúng hạn phải ra `late_delivery_logistics`; case giao đúng/sớm hạn không được gắn cờ trễ.
-- **Kết quả thực tế:** 50/50 case chạy xong; 8 case ra `late_delivery_seller`, 8 case (`EC_009, EC_010, EC_012, EC_016, EC_017, EC_031, EC_049, EC_050`) ra `late_delivery_logistics`, không case nào bị gắn `late_delivery=true` sai khi tôi đối chiếu tay timestamp của `EC_009` (`3aaee056441dcae251f360b1c71a7279`).
+- **Kết quả mong đợi:** Case giao trễ có seller vi phạm → `late_delivery_seller`; giao trễ nhưng seller đúng hạn → `late_delivery_logistics`; giao đúng/sớm hạn → không gắn cờ trễ.
+- **Kết quả thực tế:** Tự chạy lại 50/50 case; 8 case `late_delivery_logistics` đều có `late_seller_ids=[]` (Order & Seller Agent xác nhận không seller nào vi phạm), khớp tay khi đối chiếu timestamp `EC_009`.
 - **Artifact/log:** `output/EC_009.json`, dòng `agent: "delivery_agent"` trong `logging/trace.jsonl`.
 
 ## 5. Một quyết định kỹ thuật quan trọng
 
-- **Bối cảnh:** `order_delivered_customer_date` có thể rỗng/`NaN` khi đơn chưa giao (chưa có timestamp thực tế) hoặc khi Order & Seller Agent không tìm thấy order (`order = {}`); so sánh trực tiếp giá trị rỗng với `order_estimated_delivery_date` dễ gây lỗi hoặc kết luận sai.
-- **Các phương án đã cân nhắc:** (1) So sánh chuỗi trực tiếp, coi rỗng là "chưa trễ" bằng try/except bao quanh; (2) Parse bằng `pandas.to_datetime(errors="coerce")` rồi guard bằng `pd.notna()` trước khi so sánh.
-- **Phương án đã chọn:** Phương án (2) — chỉ kết luận `late_delivery=True` khi cả `delivered_customer` và `estimated` đều `pd.notna()`.
-- **Lý do:** try/except nuốt lỗi âm thầm, khó phân biệt "code sai" với "dữ liệu thiếu hợp lệ"; dùng `pd.notna()` tường minh, đơn chưa giao hoặc order không tồn tại tự động rơi về `late_delivery=False` (không bị coi là bằng chứng giao trễ giả) mà không cần try/except.
-- **Bằng chứng quyết định phù hợp:** Test case giả `claimed_order_id` không tồn tại (`order={}` được coordinator truyền xuống) chạy qua `delivery_agent.analyze()` không crash, trả đúng `late_delivery: false, late_cause_candidate: null` — xác nhận guard hoạt động đúng với input rỗng thực tế chứ không chỉ trên giấy.
+- **Bối cảnh:** Delivery Agent có nên tự nhận `late_seller_ids` làm input để tự quyết `late_delivery_seller` vs `late_delivery_logistics`, hay chỉ trả sự kiện thời gian thuần túy và để Policy Agent tổng hợp?
+- **Các phương án đã cân nhắc:** (1) Delivery Agent nhận thêm `late_seller_ids`, tự trả về `root_cause_candidate` cụ thể; (2) Delivery Agent hoàn toàn độc lập, chỉ trả `delivered_after_estimate`, việc rẽ nhánh để 100% trong `policy_rules.decide()`.
+- **Phương án đã chọn:** (2).
+- **Lý do:** Giữ Delivery Agent không phụ thuộc Order & Seller Agent giúp 2 agent này có thể chạy song song thật sự (không có dependency chéo), code đơn giản hơn (agent chỉ trả 1 sự kiện thời gian, không tự "đoán" trách nhiệm), và toàn bộ logic rẽ nhánh nằm gọn 1 nơi (`policy_rules.py`) — dễ audit hơn là rải rác quyết định ở nhiều agent.
+- **Bằng chứng quyết định phù hợp:** 50/50 case chạy đúng, không có case nào cần Delivery Agent biết về seller mà vẫn phân loại đúng `late_delivery_seller`/`late_delivery_logistics`; nhóm nộp thật đạt 100.00/100.
 
 ## 6. Một lỗi hoặc blocker đã xử lý
 
-- **Triệu chứng/lỗi nguyên văn:** Câu hỏi thiết kế trước khi viết code: nếu Order & Seller Agent trả `order=None` (không tìm thấy `claimed_order_id`), `delivery_agent.analyze(order, ...)` gọi `order.get("order_delivered_customer_date")` trên `None` sẽ crash `AttributeError: 'NoneType' object has no attribute 'get'`.
-- **Lệnh hoặc bước tái hiện:** Gọi thử `delivery_agent.analyze(case_id, order_id, None, [])` trực tiếp với `order=None`.
-- **Nguyên nhân gốc:** Hàm của tôi giả định luôn nhận được `order` là dict, nhưng Order & Seller Agent có thể trả `None` khi không tìm thấy order trong CSV.
-- **Cách xử lý:** Thống nhất với Coordinator (Phong): coordinator luôn chuẩn hoá `order = order_seller["order"] or {}` trước khi gọi `delivery_agent.analyze()`, nên phía tôi chỉ cần nhận `dict` (có thể rỗng), không cần tự xử `None` bên trong `delivery_agent.py`.
-- **Cách xác minh sau khi sửa:** Chạy case giả `claimed_order_id="ORDER_ID_KHONG_TON_TAI"` qua `coordinator_agent.process_case()` — không crash, `delivery_agent` log `late_delivery: false, late_cause_candidate: null` với `order={}` được truyền vào.
-- **Điều học được:** Contract giữa các agent (agent sau nhận `dict` gì, có thể rỗng nhưng không phải `None`) cần thống nhất ở tầng Coordinator, không nên để mỗi agent tự đoán và tự viết guard `None` rải rác — dễ thiếu sót.
+- **Triệu chứng/lỗi nguyên văn:** Câu hỏi thiết kế trước khi viết code: `order_delivered_customer_date` hoặc `order_estimated_delivery_date` có thể là `NaN`/rỗng (đơn chưa giao) — so sánh trực tiếp giá trị rỗng dễ crash hoặc cho kết quả sai (coi nhầm là "không trễ").
+- **Lệnh hoặc bước tái hiện:** Gọi thử `DeliveryAgent().run(case_id, store, order_id)` với 1 order có `order_delivered_customer_date` rỗng.
+- **Nguyên nhân gốc:** So sánh `>` trực tiếp giữa `NaT`/`NaN` với timestamp thật trong pandas không raise lỗi nhưng trả `False` một cách âm thầm — dễ nhầm "chưa giao" thành "giao đúng hạn".
+- **Cách xử lý:** Dùng `pd.notna()` guard tường minh cho cả 2 giá trị trước khi so sánh; nếu 1 trong 2 rỗng, trả `delivered_after_estimate=None` (không phải `True`/`False`) — Policy Agent coi `None` khác `False`, không tự ý gán "không trễ" cho đơn chưa giao.
+- **Cách xác minh sau khi sửa:** Test order chưa giao trả đúng `delivered_after_estimate=None`, không rơi vào nhánh `late_delivery_*` lẫn `unsupported_late_claim` một cách sai lệch.
+- **Điều học được:** Với dữ liệu có thể thiếu, nên dùng 3 trạng thái (`True`/`False`/`None`) thay vì ép về boolean 2 trạng thái — tránh việc "không biết" bị hiểu nhầm thành "biết là không".
 
 Nếu chưa xử lý xong:
 
-- **Phạm vi bị ảnh hưởng:** [Module/artifact.]
-- **Những gì đã loại trừ:** [Các giả thuyết đã kiểm tra.]
-- **Bước tiếp theo:** [Hành động có thể kiểm chứng.]
+- **Phạm vi bị ảnh hưởng:** [Không có — đã xử lý xong.]
+- **Những gì đã loại trừ:** [N/A]
+- **Bước tiếp theo:** [N/A]
 
 ## 7. Hiểu biết về luồng end-to-end
 
@@ -100,11 +100,11 @@ Giải thích ngắn gọn bằng lời của bạn:
 
 **Câu trả lời:**
 
-1. Tôi là bước thứ 3 trong chuỗi: nhận `order` (từ Order & Seller Agent) và `seller_violations`, so timestamp để ra `late_delivery`/`late_cause_candidate`, đưa cho Policy Agent gộp với kết quả Payment Agent để chọn `primary_issue` cuối, rồi Verifier build JSON và Coordinator ghi `output/EC_xxx.json`.
-2. Root-cause code của tôi (`SELLER_HANDOFF_AFTER_LIMIT` hay `CARRIER_DELIVERED_AFTER_ESTIMATE`) phải khớp đúng điều kiện timestamp thật — nếu tôi báo `late_delivery_seller` nhưng thực ra seller giao đúng hạn, evidence `seller:<id>` và `policy:SELLER_HANDOFF_AFTER_LIMIT` sẽ sai theo dữ liệu gốc, bị tính sai ở cả root cause (15%) lẫn evidence (15%).
-3. Verifier kiểm confidence, giới hạn số lượng, và quan trọng với phần tôi: đối chiếu `cause_code` tôi/Policy Agent chọn có thật sự tồn tại trong tập 6 mã hợp lệ (`VALID_ROOT_CAUSE_CODES`), không tự bịa mã mới.
-4. Dùng chung 50 case + `EC_POLICY_V1` để "trễ" được định nghĩa nhất quán (cùng công thức so `estimated_delivery_date`) cho mọi case, tránh tình trạng case này tính trễ theo cách khác case kia.
-5. Case thuộc phần giao hàng (`late_delivery_seller`/`late_delivery_logistics`) đúng khi `late_delivery` khớp thật với 2 mốc thời gian trong CSV và bên chịu trách nhiệm khớp với `seller_violations` — tôi đã đối chiếu tay `EC_009`: giao trễ thật, nhưng seller không vi phạm `shipping_limit_date` nên đúng là lỗi logistics, không phải seller.
+1. Tôi chạy độc lập song song với Order & Seller Agent (không phụ thuộc nhau), chỉ trả `delivered_after_estimate`. Policy Agent gộp fact của tôi với `late_seller_ids` (Order & Seller) và `payment_total` (Payment) để ra `primary_issue` cuối; `output_builder.py` build JSON, Verifier kiểm rồi Coordinator ghi `output/EC_xxx.json`.
+2. Root-cause code (`CARRIER_DELIVERED_AFTER_ESTIMATE` cho logistics, `SELLER_HANDOFF_AFTER_LIMIT` cho seller) do Policy Agent gán dựa trên tổ hợp fact của tôi + Order & Seller Agent — nếu tôi tính sai `delivered_after_estimate`, cả root cause (15%) lẫn evidence liên quan đều sai theo, dù Order & Seller Agent tính `late_seller_ids` đúng 100%.
+3. Verifier tra ngược từng evidence ID vào `DataStore`, và raise lỗi khiến case bị loại khỏi `output/` nếu có vấn đề — không có khái niệm "ghi file kèm cảnh báo" trong thiết kế `main`.
+4. Dùng chung 50 case + `EC_POLICY_V1` để định nghĩa "trễ" nhất quán (cùng phép so `delivered_customer_date > estimated_delivery_date`) cho mọi case, không lệch chuẩn giữa các lần chạy hay giữa nhánh git khác nhau của nhóm khi đối chiếu điểm.
+5. Case thuộc phần giao hàng đúng khi `delivered_after_estimate` khớp thật 2 mốc thời gian trong CSV, độc lập hoàn toàn với việc seller có vi phạm hay không — tôi đã đối chiếu tay `EC_009`: giao trễ thật, và vì Order & Seller Agent xác nhận không seller nào vi phạm nên đúng là lỗi logistics. Nhóm nộp thật nhánh `main` đạt **100.00/100**.
 
 ## 8. Cam kết của thành viên
 
