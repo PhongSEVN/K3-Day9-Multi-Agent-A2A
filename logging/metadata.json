@@ -1,13 +1,38 @@
 {
   "model_name": "Qwen/Qwen2.5-7B-Instruct",
   "parameter_size": "7B",
-  "framework": "Python standard library; deterministic domain-agent contract",
-  "runtime": "Python 3",
+  "framework": "Custom multi-agent pipeline using Python standard library",
+  "runtime": "Python 3; entrypoint: python coordinator.py",
   "agents": {
+    "coordinator": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "coordinator.py"
+    },
+    "order_seller_agent": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "order_seller_agent.py"
+    },
+    "payment_agent": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "payment_agent.py"
+    },
     "delivery_agent": {
       "model_name": "Qwen/Qwen2.5-7B-Instruct",
       "parameter_size": "7B",
       "implementation": "delivery_agent.py"
+    },
+    "policy_agent": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "policy_agent.py"
+    },
+    "verifier_agent": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "verifier_agent.py"
     }
   }
 }

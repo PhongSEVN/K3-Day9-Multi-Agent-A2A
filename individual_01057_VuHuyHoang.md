@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | Delivery Agent | `delivery_agent.py`, `DeliveryAgent.investigate` | `case_id`, `order_id`, orders/items CSV | `DeliveryHandoff` | Hoàn thành |
 | Kiểm thử domain giao hàng | `test_delivery_agent.py` | 50 case chính thức | Kết quả unittest | Hoàn thành |
-| Thiết kế và audit | `architecture.md`, `logging/trace.jsonl` | Contract và kết quả chạy | Kiến trúc, 50 trace event | Hoàn thành phần Delivery Agent |
+| Thiết kế và audit | `architecture.md`, `logging/trace.jsonl` | Contract và kết quả chạy | Kiến trúc, 50 Delivery handoff trong trace hệ thống | Hoàn thành phần Delivery Agent |
 
 Delivery Agent chỉ đọc `olist_orders_dataset.csv` và
 `olist_order_items_dataset.csv`. Agent không tự quyết định hoàn tiền, nhằm tránh
@@ -39,7 +39,7 @@ giao cho Coordinator/Policy Agent.
 | So sánh giao thực tế với ngày dự kiến | `delivery_agent.py` | `delivered_late` và delivery status | Chạy unittest và pipeline 50 case |
 | Xác định seller hay logistics | `DeliveryAgent.investigate` | Cause code và seller/item vi phạm | Đối chiếu carrier date với từng shipping limit |
 | Tạo evidence kiểm chứng được | `DeliveryHandoff` | `order:*` và `item:*` đúng định dạng | Đối chiếu orders/items CSV |
-| Trace lượt chạy mới nhất | `logging/trace.jsonl` | Chính xác 50 JSONL event | Đếm số dòng hợp lệ |
+| Trace lượt chạy mới nhất | `logging/trace.jsonl` | 50 Delivery handoff trong 350 JSONL event toàn hệ thống | Đếm và lọc JSONL theo agent |
 
 Kết quả chạy trên 50 case: 8 case `late_seller_handoff`, 8 case
 `late_logistics`, 18 case `within_estimate`, và 16 case chưa giao hoặc thiếu mốc
@@ -85,8 +85,10 @@ python -m unittest -v test_delivery_agent.py
 python delivery_agent.py --reset-trace
 ```
 
-- **Kết quả mong đợi:** 2 test đạt; xử lý đủ 50 case và tạo đúng 50 trace event.
-- **Kết quả thực tế:** `Ran 2 tests ... OK`; `Delivery Agent processed 50 cases`.
+- **Kết quả mong đợi:** Delivery Agent xử lý đủ 50 case; toàn pipeline sinh 50
+  output đã verify và trace đầy đủ các handoff.
+- **Kết quả thực tế:** Toàn bộ 5 test đạt; pipeline ghi 50 output và 350 trace
+  event, trong đó có 50 Delivery Agent handoff.
 - **Artifact/log:** `logging/trace.jsonl`, không chứa secret.
 
 ## 5. Một quyết định kỹ thuật quan trọng
@@ -109,7 +111,8 @@ python delivery_agent.py --reset-trace
 - **Nguyên nhân gốc:** Đường dẫn môi trường thuộc máy khác hoặc đã bị di chuyển.
 - **Cách xử lý:** Dùng Python hiện có trên máy để chạy test và pipeline; code chỉ
   dùng standard library nên không phát sinh khác biệt dependency.
-- **Cách xác minh:** Unittest đạt và trace có 50 dòng JSON hợp lệ.
+- **Cách xác minh:** Unittest đạt; trace hệ thống có 350 dòng JSON hợp lệ, gồm
+  đúng 50 dòng handoff của Delivery Agent.
 - **Điều học được:** Không hard-code virtual environment cá nhân; nên cung cấp
   hướng dẫn tạo môi trường tái lập theo repo.
 

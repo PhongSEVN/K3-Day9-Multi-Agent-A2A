@@ -24,6 +24,26 @@ Case JSON -> Coordinator
 | Policy | Apply `EC_POLICY_V1` in priority order | Specialist handoffs | Issue, refund and action proposal |
 | Verifier | Validate schema, evidence and financial totals | CSV data and output draft | Approved output JSON or validation errors |
 
+## Structured handoff flow
+
+The implementation uses independent agent classes rather than a single prompt:
+
+1. `Coordinator` validates and dispatches each input case.
+2. `OrderSellerAgent` returns order state, entity IDs, seller ownership, item
+   total and freight total.
+3. `PaymentAgent` returns payment rows, total and reconciliation status.
+4. `DeliveryAgent` returns delivery/estimate comparison and seller handoff
+   violations.
+5. `PolicyAgent` consumes those three handoffs and applies `EC_POLICY_V1` in the
+   mandatory priority order.
+6. `VerifierAgent` checks schema limits, entity/evidence existence, monetary
+   formatting and refund/status consistency.
+7. Only an approved draft is written to `output/EC_NNN.json`.
+
+All agents declare `Qwen/Qwen2.5-7B-Instruct` (7B parameters) through source
+configuration. The business decisions are deterministic because the supplied
+policy and CSV facts are fully structured; no unavailable fact is invented.
+
 ## Delivery Agent contract
 
 The Delivery Agent is implemented in `delivery_agent.py`. It receives `case_id`
@@ -46,8 +66,21 @@ Decision flow:
 
 ## Trace and security
 
-Every completed Delivery Agent investigation writes one JSON object to
-`logging/trace.jsonl`. A full run starts with `--reset-trace` so only the newest
-run remains. Trace records contain case/order facts and handoffs, never API keys.
-Secrets are read by provider integration from an uncommitted `.env`; the model
-name is a source constant and is repeated in `logging/metadata.json`.
+The Coordinator opens `logging/trace.jsonl` in write mode for every full run, so
+the file represents only the newest run. It records dispatch, every specialist
+handoff, verification and output writing. Trace records contain case/order facts
+and never API keys. Secrets are read by provider integration from an uncommitted
+`.env`; the model name is a source constant and is repeated in
+`logging/metadata.json`.
+
+## Run and submission
+
+```powershell
+python -m unittest -v
+python coordinator.py
+Compress-Archive -Path output\EC_*.json -DestinationPath output.zip -Force
+```
+
+The ZIP contains only the 50 output JSON files. Source, input, data, `.env`,
+architecture, metadata and trace remain in the Git repository/workspace and are
+not included in the submission ZIP.
