@@ -1,0 +1,13 @@
+{
+  "model_name": "Qwen/Qwen2.5-7B-Instruct",
+  "parameter_size": "7B",
+  "framework": "Python standard library; deterministic domain-agent contract",
+  "runtime": "Python 3",
+  "agents": {
+    "delivery_agent": {
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "parameter_size": "7B",
+      "implementation": "delivery_agent.py"
+    }
+  }
+}
