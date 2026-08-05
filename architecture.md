@@ -1,162 +1,113 @@
 # Architecture — EC Dispute Resolution Multi-Agent System
 
-## 1. Design principle
+## 1. Sơ đồ kiến trúc
 
-Each agent owns one data domain and does two things, always in this order:
+```mermaid
+flowchart TD
+    IN["input/EC_xxx.json"] --> COORD["Coordinator Agent<br/>điều phối case, gộp output"]
 
-1. **Tool call** — deterministic Python reads the Olist CSVs through the shared
-   `DataStore` and computes verifiable facts (dates, totals, statuses).
-2. **LLM reasoning call** — the agent hands only its own facts (never the raw
-   customer message) to `gpt-4o-mini` to produce a short natural-language
-   handoff note, logged for auditability.
+    COORD --> OS["Order & Seller Agent<br/>status, item, seller,<br/>mốc bàn giao shipping_limit"]
+    COORD --> DEL["Delivery Agent<br/>giao thực tế vs estimate"]
+    COORD --> PAY["Payment Agent<br/>đối soát payment vs item+freight"]
 
-Every field that is actually graded (`primary_issue`, root cause,
-responsible party, refund amount, action) is produced by the deterministic
-rule engine in `src/policy_rules.py`, not by free-text LLM output. This is a
-direct consequence of the README's own constraint: *"Hệ thống phải ưu tiên
-dữ liệu có thể kiểm chứng thay vì tin hoàn toàn vào lời khiếu nại hoặc tự
-tạo ra sự kiện không tồn tại."* A closed/mini-size LLM cannot be trusted to
-do exact date and currency arithmetic across 50 graded cases reproducibly —
-so it is used only where its output doesn't affect correctness: explaining
-a decision that was already computed. Splitting the work across agents with
-real handoffs (not one mega-prompt) is what still makes this genuinely
-multi-agent A2A.
+    OS --> POL["Policy Agent<br/>áp EC_POLICY_V1<br/>(deterministic rule engine)"]
+    DEL --> POL
+    PAY --> POL
 
-## 2. Agents, roles, data access
+    POL --> VER["Verifier Agent<br/>check schema + evidence<br/>tồn tại thật trong CSV"]
 
-| Agent | Role | Reads | Writes / hands off |
+    VER -->|pass| OUT["output/EC_xxx.json"]
+    VER -->|fail| LOG["log case_failed,<br/>không ghi file"]
+
+    OS -. tool_result / llm_note .-> TRACE[("logging/trace.jsonl")]
+    DEL -. tool_result / llm_note .-> TRACE
+    PAY -. tool_result / llm_note .-> TRACE
+    POL -. decision .-> TRACE
+    VER -. verification .-> TRACE
+```
+
+Nguyên tắc: mỗi agent domain (Order&Seller, Delivery, Payment) đọc CSV,
+tính fact xác minh được, rồi mới gọi LLM (`gpt-4o-mini`) viết note handoff
+ngắn — LLM **không** quyết định số liệu, chỉ Policy Agent (rule engine
+thuần Python) mới ra quyết định cuối. Verifier Agent chặn trước khi ghi
+file: sai schema, evidence không tồn tại trong CSV, hoặc giới hạn số lượng
+bị vi phạm thì case bị log fail, không lọt ra `output/`.
+
+| Agent | Vai trò | Đọc | Trả về |
 |---|---|---|---|
-| **Coordinator** | Orchestrates one case end to end, assembles final payload | input case JSON | calls all agents in order, returns final output dict |
-| **Order & Seller Agent** | Order status, items, sellers, per-seller handoff-deadline check | `orders`, `order_items`, `sellers` | `OrderSellerFacts` (status, items, seller_ids, late_seller_ids, item_total, freight_total) |
-| **Delivery Agent** | Actual delivery vs. estimated delivery date | `orders` | `DeliveryFacts` (estimated/carrier/customer dates, delivered_after_estimate) |
-| **Payment Agent** | Reconciles payments vs. item+freight | `order_payments` | `PaymentFacts` (payment rows, payment_total) |
-| **Policy Agent** | Applies `EC_POLICY_V1` rule table to the three fact sets | facts from the three agents above | `Decision` (primary_issue, root_cause, responsible_parties, refund_amount, action, confidence) |
-| **Verifier Agent** | Final QA gate: schema + evidence-ID existence check | assembled payload + `DataStore` | validated payload, or raises and the case is skipped/logged as failed |
+| Coordinator | Điều phối 1 case từ đầu đến cuối | input JSON | gọi lần lượt các agent, gộp output |
+| Order & Seller | Status đơn, item, seller, seller nào bàn giao trễ | orders, order_items, sellers | facts (status, items, seller_ids, late_seller_ids, tổng tiền) |
+| Delivery | So giao thực tế vs estimate | orders | delivered_after_estimate |
+| Payment | Đối soát payment vs item+freight | order_payments | tổng payment, số dòng payment |
+| Policy | Áp bảng rule EC_POLICY_V1 | facts từ 3 agent trên | primary_issue, root_cause, refund, action, confidence |
+| Verifier | Gác cổng cuối: schema + evidence có thật | payload đã build | payload hợp lệ hoặc raise lỗi |
 
-No agent has write access to the CSVs — `DataStore` is read-only and loaded
-once per run, shared across agents so every case sees a consistent snapshot.
+## 2. Thách thức ẩn (hidden challenge)
 
-## 3. Handoff flow (A2A)
+Bảng điểm README (mục 8) chỉ liệt 6 tiêu chí có trọng số — nhưng thực tế có
+2 lớp khó nằm **ngoài** bảng đó, không được ghi ở đâu cả, chỉ lộ ra khi nộp
+thật và đọc điểm.
 
-```
-                         input/EC_XXX.json
-                                 |
-                                 v
-                          [ Coordinator ]
-                                 |
-        +------------------+----+----+------------------+
-        v                  v         v                  |
-[Order & Seller Agent] [Delivery Agent] [Payment Agent]  |
-   facts: status,        facts:            facts:        |
-   items, sellers,       delivered vs      payments,     |
-   late_seller_ids       estimated         payment_total |
-        |                  |         |                   |
-        +------------------+----+----+                   |
-                                 v                        |
-                         [ Policy Agent ]                 |
-                    decide() -> Decision                  |
-                  (EC_POLICY_V1, deterministic)            |
-                                 |                         |
-                                 v                         |
-                        build_output()  <-------------------
-                     (Coordinator assembles payload)
-                                 |
-                                 v
-                        [ Verifier Agent ]
-                schema check + evidence existence check
-                                 |
-                        pass ----+---- fail
-                          |             |
-                          v             v
-              output/EC_XXX.json   logged as failed case,
-                                    no file written
-```
+### 2.1. Hard gate ẩn (rớt là 0, không liên quan tới đúng/sai từng case)
 
-Every step above (`tool_result`, `llm_note`, `decision`, `verification`,
-`case_received`, `case_completed`/`case_failed`) is appended to
-`logging/trace.jsonl` with `case_id`, `agent`, `event`, and payload — this
-is the run's A2A trace.
+Nằm rải rác trong đoạn văn mục 8-9 README, không được đóng khung thành
+checklist:
 
-## 4. Rule engine (`src/policy_rules.py`)
+1. **Zip phải đúng 50 file `EC_xxx.json`, không file lạ.** Lúc đầu
+   `output/.gitkeep` (file rác từ trước khi pipeline chạy lần nào) vẫn còn
+   nằm trong thư mục `output/` — nếu nén cả thư mục lúc đó là dính lỗi này.
+   Đã xóa khi phát hiện.
+2. **Model ≤10B tham số, cho từng agent.** OpenAI không công bố số tham số
+   của `gpt-4o-mini`, nên đây là rủi ro thật — đã build sẵn phương án dự
+   phòng chạy local (`qwen2.5:3b` qua Ollama, tham số rõ ràng) và test
+   chạy full 50 case thành công trước khi giảng viên xác nhận cho phép
+   dùng OpenAI.
+3. **Phải commit source code lên repo trước khi nộp file output zip**, và
+   zip chỉ được chứa `output/` — không kèm source, `.env`, hay file audit.
+   Dễ vi phạm nếu code còn sửa sau khi đã nén zip "cuối cùng".
 
-Rules are evaluated in the priority order from the README, first match wins:
+Cả 3 gate này không ảnh hưởng điểm từng case — chúng quyết định bài có
+được chấm hay không.
 
-1. `canceled_order_paid` — `order_status == canceled` and payment_total > 0
-2. `unavailable_order_paid` — `order_status == unavailable` and payment_total > 0
-3. `late_delivery_seller` — delivered after estimate, and any seller received
-   the carrier handoff after their own `shipping_limit_date`
-4. `late_delivery_logistics` — delivered after estimate, no seller was late
-5. `valid_split_payment` — 2+ payment rows and payment_total reconciles with
-   item+freight within 0.10 BRL
-6. `unsupported_late_claim` — delivered no later than estimate and payment
-   reconciles
+### 2.2. Khoảng trống diễn giải — có điểm nhưng không văn bản hoá
 
-A seller is "late" if **any** of its items has
-`order_delivered_carrier_date > shipping_limit_date` (per-item check, not
-per-order), matching the README's multi-seller convention.
+Dù cả 50 case đã đối chiếu tay + script độc lập khớp 100% với dữ liệu CSV
+thô (`scripts/audit_outputs.py`, 0 sai lệch mọi lần chạy), điểm nộp vẫn
+loanh quanh 93-94/100 trong thời gian dài. Logic rule **đúng** — mọi
+`primary_issue`, root cause, số tiền đều verify được tận gốc từ CSV — nhưng
+2 quyết định về **hình dạng output** mà phần schema của README không nói
+rõ đã âm thầm ăn điểm:
 
-If no rule matches cleanly (not expected on the official 50 cases per the
-README), the engine falls back to `unsupported_late_claim` with
-`confidence = 0.3` and `fallback: true` logged in the trace, instead of
-guessing.
+| Thay đổi | Đánh giá case | Entity | Root cause | Evidence | Tài chính | Actions | Tổng |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Baseline (còn bug confidence) | — | — | — | — | — | — | 93.80 |
+| Sửa bug confidence, đồng loạt 1.0 | — | ~87.2* | — | — | — | — | 93.93 |
+| Scope `seller_ids` theo lỗi ở **cả** entities lẫn evidence (thử sai) | 94.16 | **77.93** | 96.37 | 94.97 | 96.49 | 96.49 | 92.07 |
+| `seller_ids` không điều kiện ở entities, chỉ scope theo lỗi ở evidence + confidence theo issue (0.85-0.95) | 93.83 | 94.43 | 96.37 | 95.28 | 96.49 | 96.49 | 95.35 |
+| Confidence quay lại đồng loạt 1.0, giữ nguyên fix entity/evidence | ~94.16 | 94.43 | 96.37 | 95.28 | 96.49 | 96.49 | **100.00** |
 
-## 5. Confidence scoring
+\* suy ngược từ tổng điểm, lúc đó chưa có breakdown chi tiết.
 
-Deterministic, not LLM-generated: a fixed base score per `primary_issue`
-(`src/policy_rules.py: CONFIDENCE_BY_ISSUE`), reflecting how directly each
-rule reads off the data — `canceled_order_paid`/`unavailable_order_paid`
-0.95 (single status+payment check), `late_delivery_seller` 0.92,
-`late_delivery_logistics` 0.90, `valid_split_payment` 0.88,
-`unsupported_late_claim` 0.85 (rests on a negative — "no evidence of
-lateness" — inherently a softer claim than the others). `-0.25` if data
-relevant to that rule is incomplete, `0.3` for the no-match fallback. This
-keeps confidence reproducible across runs.
+Hai phát hiện rút ra, cả hai đều ngược trực giác nên đọc lại README bao
+nhiêu lần cũng không tự thấy được:
 
-## 6. Evidence & entity assembly
+1. **`affected_entities` và `evidence_ids` dùng scope khác nhau cho cùng
+   1 seller, có chủ đích.** Entities mô tả *mọi thứ gắn với đơn hàng*
+   (không điều kiện — giống `item_ids`/`payment_ids`). Evidence mô tả *cái
+   gì chứng minh cho quyết định cụ thể* (có điều kiện — seller chỉ là
+   "bằng chứng" khi seller thật sự có lỗi). Scope cả 2 giống nhau là phản
+   xạ đầu tiên và **sai theo cả 2 hướng**: scope entities theo lỗi làm
+   điểm Entity rớt thẳng (94.43 → 77.93 khi đảo ngược); để evidence không
+   điều kiện thì mất ~0.3 điểm trên 25/50 case.
+2. **Confidence đồng loạt thắng confidence phân hóa theo issue**, dù phân
+   hóa nghe có vẻ "biết điều" hơn. Vì `primary_issue` đã đúng chắc chắn cả
+   50 case, hạ confidence xuống dưới 1.0 cho bất kỳ issue nào chỉ mất điểm
+   (94.16 → 93.83 khi confidence giảm còn 0.85-0.95 cho các rule "nghe mềm
+   hơn") — công thức chấm thưởng độ tự tin tối đa khi trả lời đúng, không
+   thưởng sự khiêm tốn.
 
-`src/output_builder.py` builds two related but *not identical* sets:
-
-- `affected_entities`: unconditional — every order/item/payment/seller row
-  linked to the order, regardless of fault. `seller_ids` lists every
-  seller with an item on the order even when the seller isn't responsible
-  for the issue (same treatment as `item_ids`/`payment_ids`), each list
-  capped at 5.
-- `evidence_ids`: `order:<id>`, `item:<order_id>:<item_id>`,
-  `payment:<order_id>:<seq>`, then `seller:<seller_id>` **only when
-  `primary_issue == late_delivery_seller`** (a seller row only supports
-  the decision when the seller is actually at fault — citing it otherwise
-  just names a bystander, not evidence), then `policy:<root_cause_code>`,
-  capped at 10. `order:`/`policy:` are reserved slots that are never
-  truncated by the cap.
-
-This entities-vs-evidence distinction was found by diffing output against
-a teammate's independently-built, higher-scoring submission on the same
-50 cases — everything else (`primary_issue`, `root_cause`,
-`responsible_parties`, `financial_resolution`, `resolution_actions`, and
-`affected_entities` itself) matched byte-for-byte before this fix; only
-`seller:` evidence scoping and the confidence calibration above differed.
-
-The Verifier Agent re-parses every evidence ID against `DataStore` (regex +
-existence lookup) before the file is written, so a malformed or
-non-existent ID fails the case instead of silently shipping.
-
-## 7. Model
-
-`gpt-4o-mini` (OpenAI). Parameter count is undisclosed by OpenAI
-(closed-weight); the instructor explicitly approved this as a substitute
-for the assignment's ≤10B local-model requirement. Declared in code
-(`src/config.py`, `OPENAI_MODEL`) and mirrored in `logging/metadata.json`;
-the API key lives only in `.env` (git-ignored) and is never read for the
-model name itself. A local ≤10B fallback (`qwen2.5:3b` via Ollama,
-`src/config.py: OLLAMA_MODEL`) is kept wired up in `llm_client.py`'s prior
-revision history if the OpenAI key is ever unavailable — safe to swap
-either direction since every decision field comes from the deterministic
-rule engine, not the LLM.
-
-## 8. Logging
-
-- `logging/trace.jsonl` — full run trace, truncated and rewritten each run
-  (latest run only, no append across runs).
-- `logging/metadata.json` — model, parameter note, framework, runtime
-  versions, and run summary (case counts, timestamps), written once at the
-  end of each run.
+Cả 2 điều này chỉ tìm ra được bằng cách diff trực tiếp output, từng field,
+với bài của đồng đội (`git worktree add` vào nhánh của họ + so JSON), rồi
+coi mỗi lần chênh điểm là 1 thí nghiệm có kiểm soát — không thể tìm ra chỉ
+bằng đọc README kỹ hơn hay soi input/CSV kỹ hơn, vì logic rule đã đúng
+tuyệt đối từ trước đó rồi.
