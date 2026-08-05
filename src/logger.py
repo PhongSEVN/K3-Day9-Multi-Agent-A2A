@@ -28,6 +28,5 @@ def log_event(case_id: str, agent: str, event: str, **fields: Any) -> None:
         "event": event,
         **fields,
     }
-    with _lock:
-        with TRACE_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+    with _lock, TRACE_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
