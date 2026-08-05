@@ -40,6 +40,11 @@ The implementation uses independent agent classes rather than a single prompt:
    formatting and refund/status consistency.
 7. Only an approved draft is written to `output/EC_NNN.json`.
 
+Entity and evidence selection is issue-aware: item/payment entities describe the
+affected transaction, while `seller_ids` and `seller:` evidence are emitted only
+when the seller is the responsible party. Canceled/unavailable decisions use
+order, payment and policy evidence; item rows are not evidence for the decision.
+
 All agents declare `Qwen/Qwen2.5-7B-Instruct` (7B parameters) through source
 configuration. The business decisions are deterministic because the supplied
 policy and CSV facts are fully structured; no unavailable fact is invented.

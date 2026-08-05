@@ -104,6 +104,36 @@ class VerifierAgent:
         if not 1 <= len(actions) <= 5:
             errors.append("invalid resolution action count")
 
+        issue = assessment.get("primary_issue")
+        seller_entities = entities.get("seller_ids", [])
+        seller_evidence = [value[7:] for value in evidence if value.startswith("seller:")]
+        item_evidence = [value[5:] for value in evidence if value.startswith("item:")]
+        if issue == "late_delivery_seller":
+            responsible_sellers = [
+                party.get("party_id")
+                for party in parties
+                if party.get("party_type") == "seller"
+            ]
+            if set(seller_entities) != set(responsible_sellers):
+                errors.append("affected sellers must equal responsible sellers")
+            if set(seller_evidence) != set(seller_entities):
+                errors.append("seller evidence must cover affected sellers")
+        elif seller_entities or seller_evidence:
+            errors.append("seller entity/evidence is not relevant to this primary issue")
+
+        if issue in {"canceled_order_paid", "unavailable_order_paid"} and item_evidence:
+            errors.append("canceled/unavailable decisions must not include item evidence")
+        if causes and not any(
+            value == f"policy:{causes[0].get('cause_code')}" for value in evidence
+        ):
+            errors.append("policy evidence must match rank-1 root cause")
+        order_entities = entities.get("order_ids", [])
+        if not all(f"order:{order_id}" in evidence for order_id in order_entities):
+            errors.append("order evidence must cover affected orders")
+        payment_entities = entities.get("payment_ids", [])
+        if not all(f"payment:{payment_id}" in evidence for payment_id in payment_entities):
+            errors.append("payment evidence must cover affected payments")
+
         financial = output.get("financial_resolution", {})
         if financial.get("currency") != "BRL":
             errors.append("currency must be BRL")
@@ -137,4 +167,3 @@ class VerifierAgent:
         if evidence_id.startswith("policy:"):
             return evidence_id[7:] in self.CAUSES
         return False
-

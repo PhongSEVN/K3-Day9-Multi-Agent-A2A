@@ -105,16 +105,21 @@ python delivery_agent.py --reset-trace
 
 ## 6. Một lỗi hoặc blocker đã xử lý
 
-- **Triệu chứng:** Python environment ghi trong `CLAUDE.md` không chạy được:
-  `C:\Users\THIS PC\Desktop\envs\python_all\Scripts\python.exe` không tồn tại.
-- **Bước tái hiện:** Gọi trực tiếp executable tại đường dẫn trên.
-- **Nguyên nhân gốc:** Đường dẫn môi trường thuộc máy khác hoặc đã bị di chuyển.
-- **Cách xử lý:** Dùng Python hiện có trên máy để chạy test và pipeline; code chỉ
-  dùng standard library nên không phát sinh khác biệt dependency.
-- **Cách xác minh:** Unittest đạt; trace hệ thống có 350 dòng JSON hợp lệ, gồm
-  đúng 50 dòng handoff của Delivery Agent.
-- **Điều học được:** Không hard-code virtual environment cá nhân; nên cung cấp
-  hướng dẫn tạo môi trường tái lập theo repo.
+- **Triệu chứng:** Lượt chấm đầu đạt `94.2198` dù 50 primary issue và toàn bộ số
+  tiền đã khớp chính sách/CSV.
+- **Bước tái hiện:** Phân nhóm output theo issue rồi đếm `seller_ids`, `seller:`
+  và `item:` evidence không trực tiếp hỗ trợ quyết định.
+- **Nguyên nhân gốc:** Coordinator ban đầu coi mọi seller/item liên quan đến order
+  là entity/evidence bị ảnh hưởng. Điều này tạo seller false positive ở 34 case
+  seller không chịu trách nhiệm và item evidence thừa ở 8 case canceled.
+- **Cách xử lý:** Chọn entity/evidence theo primary issue: seller chỉ xuất hiện ở
+  `late_delivery_seller`; canceled/unavailable chỉ dùng order, payment và policy
+  evidence.
+- **Cách xác minh:** Mô phỏng trọng số dự đoán phần false positive làm mất
+  `5.790357` điểm, sát mức mất thực tế `5.7802`; audit độc lập bằng CSV/Decimal
+  đạt 50/50 case và toàn bộ 6 unittest đạt.
+- **Điều học được:** ID tồn tại trong CSV chưa đủ để trở thành evidence phù hợp;
+  evidence phải vừa kiểm chứng được vừa trực tiếp liên quan đến kết luận.
 
 ## 7. Hiểu biết về luồng end-to-end
 

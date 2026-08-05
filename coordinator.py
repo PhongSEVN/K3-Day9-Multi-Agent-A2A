@@ -51,12 +51,31 @@ class Coordinator:
         decision = self.policy_agent.decide(order, payment, delivery)
         self._trace(trace_stream, "policy_agent", "handoff", case_id, asdict(decision))
 
+        # Affected sellers and evidence are issue-aware. A seller is related to
+        # an order, but is only an affected entity when EC_POLICY_V1 assigns
+        # seller responsibility. Likewise, canceled/unavailable decisions need
+        # order/payment evidence, not unrelated item/seller rows.
+        affected_seller_ids = (
+            delivery.violating_seller_ids[:5]
+            if decision.primary_issue == "late_delivery_seller"
+            else []
+        )
+        item_evidence = (
+            []
+            if decision.primary_issue in {"canceled_order_paid", "unavailable_order_paid"}
+            else order.item_evidence_ids
+        )
+        seller_evidence = (
+            [f"seller:{seller_id}" for seller_id in affected_seller_ids]
+            if decision.primary_issue == "late_delivery_seller"
+            else []
+        )
         evidence = list(
             dict.fromkeys(
                 [order.order_evidence_id]
-                + order.item_evidence_ids
+                + item_evidence
                 + payment.payment_evidence_ids
-                + order.seller_evidence_ids
+                + seller_evidence
                 + [f"policy:{decision.root_cause_code}"]
             )
         )[:10]
@@ -70,7 +89,7 @@ class Coordinator:
             "affected_entities": {
                 "order_ids": [order_id],
                 "item_ids": order.item_ids,
-                "seller_ids": order.seller_ids,
+                "seller_ids": affected_seller_ids,
                 "payment_ids": payment.payment_ids,
             },
             "root_cause_analysis": {
@@ -134,4 +153,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
