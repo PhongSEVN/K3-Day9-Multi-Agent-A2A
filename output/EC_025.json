@@ -3,7 +3,7 @@
   "assessment": {
     "primary_issue": "valid_split_payment",
     "case_status": "no_action",
-    "confidence": 1.0
+    "confidence": 0.88
   },
   "affected_entities": {
     "order_ids": [
@@ -14,7 +14,9 @@
       "e06ff711ddcab05c3651a9b1bb003950:2",
       "e06ff711ddcab05c3651a9b1bb003950:3"
     ],
-    "seller_ids": [],
+    "seller_ids": [
+      "391fc6631aebcf3004804e51b40bcf1e"
+    ],
     "payment_ids": [
       "e06ff711ddcab05c3651a9b1bb003950:1",
       "e06ff711ddcab05c3651a9b1bb003950:2"

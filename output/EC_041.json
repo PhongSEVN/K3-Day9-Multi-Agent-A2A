@@ -3,7 +3,7 @@
   "assessment": {
     "primary_issue": "canceled_order_paid",
     "case_status": "action_required",
-    "confidence": 1.0
+    "confidence": 0.95
   },
   "affected_entities": {
     "order_ids": [
@@ -12,7 +12,9 @@
     "item_ids": [
       "64a8b3b4c19751b51d211deb32fdc67b:1"
     ],
-    "seller_ids": [],
+    "seller_ids": [
+      "fc5a0d7a310a7a41abf86a458585ff2b"
+    ],
     "payment_ids": [
       "64a8b3b4c19751b51d211deb32fdc67b:1"
     ]
@@ -33,6 +35,7 @@
   },
   "evidence_ids": [
     "order:64a8b3b4c19751b51d211deb32fdc67b",
+    "item:64a8b3b4c19751b51d211deb32fdc67b:1",
     "payment:64a8b3b4c19751b51d211deb32fdc67b:1",
     "policy:ORDER_CANCELED_AFTER_PAYMENT"
   ],

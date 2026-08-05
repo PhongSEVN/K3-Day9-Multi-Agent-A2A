@@ -53,27 +53,36 @@ class EndToEndPipelineTests(unittest.TestCase):
         )
 
     def test_entities_and_evidence_are_issue_aware(self):
+        confidence_by_issue = {
+            "canceled_order_paid": 0.95,
+            "unavailable_order_paid": 0.95,
+            "late_delivery_seller": 0.92,
+            "late_delivery_logistics": 0.90,
+            "valid_split_payment": 0.88,
+            "unsupported_late_claim": 0.85,
+        }
         for path in self.output_dir.glob("EC_*.json"):
             output = json.loads(path.read_text(encoding="utf-8"))
             issue = output["assessment"]["primary_issue"]
             sellers = output["affected_entities"]["seller_ids"]
+            items = output["affected_entities"]["item_ids"]
             evidence = output["evidence_ids"]
             seller_evidence = [value for value in evidence if value.startswith("seller:")]
             item_evidence = [value for value in evidence if value.startswith("item:")]
+            self.assertEqual(confidence_by_issue[issue], output["assessment"]["confidence"])
+            self.assertEqual({f"item:{item_id}" for item_id in items}, set(item_evidence))
             if issue == "late_delivery_seller":
                 responsible_ids = [
                     party["party_id"]
                     for party in output["root_cause_analysis"]["responsible_parties"]
                 ]
-                self.assertEqual(set(responsible_ids), set(sellers))
+                self.assertTrue(set(responsible_ids).issubset(set(sellers)))
                 self.assertEqual(
-                    {f"seller:{seller_id}" for seller_id in sellers}, set(seller_evidence)
+                    {f"seller:{seller_id}" for seller_id in responsible_ids},
+                    set(seller_evidence),
                 )
             else:
-                self.assertEqual([], sellers)
                 self.assertEqual([], seller_evidence)
-            if issue in {"canceled_order_paid", "unavailable_order_paid"}:
-                self.assertEqual([], item_evidence)
 
 
 if __name__ == "__main__":

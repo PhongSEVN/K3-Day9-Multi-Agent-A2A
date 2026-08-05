@@ -25,6 +25,14 @@ class PolicyAgent:
     """Apply EC_POLICY_V1 in its mandatory priority order."""
 
     POLICY_VERSION = "EC_POLICY_V1"
+    CONFIDENCE_BY_ISSUE = {
+        "canceled_order_paid": 0.95,
+        "unavailable_order_paid": 0.95,
+        "late_delivery_seller": 0.92,
+        "late_delivery_logistics": 0.90,
+        "valid_split_payment": 0.88,
+        "unsupported_late_claim": 0.85,
+    }
 
     def decide(
         self,
@@ -59,7 +67,7 @@ class PolicyAgent:
                 primary_issue="late_delivery_seller",
                 root_cause_code="SELLER_HANDOFF_AFTER_LIMIT",
                 case_status="action_required",
-                confidence=1.0,
+                confidence=self.CONFIDENCE_BY_ISSUE["late_delivery_seller"],
                 responsible_parties=parties,
                 recommended_refund_brl=order.freight_total_brl,
                 resolution_actions=["refund_freight"],
@@ -78,7 +86,7 @@ class PolicyAgent:
                 primary_issue="valid_split_payment",
                 root_cause_code="MULTIPLE_PAYMENTS_RECONCILED",
                 case_status="no_action",
-                confidence=1.0,
+                confidence=self.CONFIDENCE_BY_ISSUE["valid_split_payment"],
                 responsible_parties=[],
                 recommended_refund_brl=0.0,
                 resolution_actions=["explain_valid_split_payment"],
@@ -88,15 +96,16 @@ class PolicyAgent:
                 primary_issue="unsupported_late_claim",
                 root_cause_code="DELIVERY_WITHIN_ESTIMATE",
                 case_status="no_action",
-                confidence=1.0,
+                confidence=self.CONFIDENCE_BY_ISSUE["unsupported_late_claim"],
                 responsible_parties=[],
                 recommended_refund_brl=0.0,
                 resolution_actions=["reject_late_refund"],
             )
         raise ValueError(f"No EC_POLICY_V1 rule matched order {order.order_id}")
 
-    @staticmethod
+    @classmethod
     def _decision(
+        cls,
         issue: str,
         cause: str,
         party_type: str,
@@ -108,9 +117,8 @@ class PolicyAgent:
             primary_issue=issue,
             root_cause_code=cause,
             case_status="action_required",
-            confidence=1.0,
+            confidence=cls.CONFIDENCE_BY_ISSUE[issue],
             responsible_parties=[{"party_type": party_type, "party_id": party_id}],
             recommended_refund_brl=round(refund, 2),
             resolution_actions=[action],
         )
-

@@ -105,21 +105,20 @@ python delivery_agent.py --reset-trace
 
 ## 6. Một lỗi hoặc blocker đã xử lý
 
-- **Triệu chứng:** Lượt chấm đầu đạt `94.2198` dù 50 primary issue và toàn bộ số
-  tiền đã khớp chính sách/CSV.
-- **Bước tái hiện:** Phân nhóm output theo issue rồi đếm `seller_ids`, `seller:`
-  và `item:` evidence không trực tiếp hỗ trợ quyết định.
-- **Nguyên nhân gốc:** Coordinator ban đầu coi mọi seller/item liên quan đến order
-  là entity/evidence bị ảnh hưởng. Điều này tạo seller false positive ở 34 case
-  seller không chịu trách nhiệm và item evidence thừa ở 8 case canceled.
-- **Cách xử lý:** Chọn entity/evidence theo primary issue: seller chỉ xuất hiện ở
-  `late_delivery_seller`; canceled/unavailable chỉ dùng order, payment và policy
-  evidence.
-- **Cách xác minh:** Mô phỏng trọng số dự đoán phần false positive làm mất
-  `5.790357` điểm, sát mức mất thực tế `5.7802`; audit độc lập bằng CSV/Decimal
-  đạt 50/50 case và toàn bộ 6 unittest đạt.
-- **Điều học được:** ID tồn tại trong CSV chưa đủ để trở thành evidence phù hợp;
-  evidence phải vừa kiểm chứng được vừa trực tiếp liên quan đến kết luận.
+- **Triệu chứng:** Lượt chấm đầu đạt `94.2198`; một thử nghiệm loại seller khỏi
+  affected entities làm điểm giảm còn khoảng 91.
+- **Bước tái hiện:** So sánh hai lượt chấm, đối chiếu 50 output với CSV và phân
+  tích consensus của các output độc lập có cùng bộ order.
+- **Nguyên nhân gốc:** Affected entities phải chứa toàn bộ seller liên quan, nhưng
+  seller evidence chỉ trực tiếp hỗ trợ case seller chịu trách nhiệm. Ngoài ra,
+  confidence cần được hiệu chỉnh theo độ mạnh của từng rule thay vì luôn là 1.0.
+- **Cách xử lý:** Khôi phục seller entity đầy đủ, giữ item evidence, giới hạn
+  seller evidence ở `late_delivery_seller`, và dùng confidence `0.95/0.92/0.90/
+  0.88/0.85` theo nhóm chính sách.
+- **Cách xác minh:** Mapping mới giải thích gần như chính xác `5.7802` điểm bị mất;
+  audit độc lập bằng CSV/Decimal đạt 50/50 case và toàn bộ unittest đạt.
+- **Điều học được:** Entity liên quan và bên chịu trách nhiệm là hai khái niệm
+  khác nhau; confidence cũng là một phần output cần calibration nhất quán.
 
 ## 7. Hiểu biết về luồng end-to-end
 

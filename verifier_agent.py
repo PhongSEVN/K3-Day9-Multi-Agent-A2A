@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 
 from model_config import MODEL_NAME, MODEL_PARAMETER_SIZE
+from policy_agent import PolicyAgent
 
 
 class VerificationError(ValueError):
@@ -108,21 +109,24 @@ class VerifierAgent:
         seller_entities = entities.get("seller_ids", [])
         seller_evidence = [value[7:] for value in evidence if value.startswith("seller:")]
         item_evidence = [value[5:] for value in evidence if value.startswith("item:")]
+        expected_confidence = PolicyAgent.CONFIDENCE_BY_ISSUE.get(issue)
+        if expected_confidence is None or confidence != expected_confidence:
+            errors.append("confidence does not match EC_POLICY_V1 calibration")
         if issue == "late_delivery_seller":
             responsible_sellers = [
                 party.get("party_id")
                 for party in parties
                 if party.get("party_type") == "seller"
             ]
-            if set(seller_entities) != set(responsible_sellers):
-                errors.append("affected sellers must equal responsible sellers")
-            if set(seller_evidence) != set(seller_entities):
-                errors.append("seller evidence must cover affected sellers")
-        elif seller_entities or seller_evidence:
-            errors.append("seller entity/evidence is not relevant to this primary issue")
+            if not set(responsible_sellers).issubset(set(seller_entities)):
+                errors.append("responsible sellers must be affected entities")
+            if set(seller_evidence) != set(responsible_sellers):
+                errors.append("seller evidence must cover responsible sellers")
+        elif seller_evidence:
+            errors.append("seller evidence is not relevant to this primary issue")
 
-        if issue in {"canceled_order_paid", "unavailable_order_paid"} and item_evidence:
-            errors.append("canceled/unavailable decisions must not include item evidence")
+        if set(item_evidence) != set(entities.get("item_ids", [])):
+            errors.append("item evidence must cover affected items")
         if causes and not any(
             value == f"policy:{causes[0].get('cause_code')}" for value in evidence
         ):

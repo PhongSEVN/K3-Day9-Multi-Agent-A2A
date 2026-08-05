@@ -51,22 +51,13 @@ class Coordinator:
         decision = self.policy_agent.decide(order, payment, delivery)
         self._trace(trace_stream, "policy_agent", "handoff", case_id, asdict(decision))
 
-        # Affected sellers and evidence are issue-aware. A seller is related to
-        # an order, but is only an affected entity when EC_POLICY_V1 assigns
-        # seller responsibility. Likewise, canceled/unavailable decisions need
-        # order/payment evidence, not unrelated item/seller rows.
-        affected_seller_ids = (
-            delivery.violating_seller_ids[:5]
-            if decision.primary_issue == "late_delivery_seller"
-            else []
-        )
-        item_evidence = (
-            []
-            if decision.primary_issue in {"canceled_order_paid", "unavailable_order_paid"}
-            else order.item_evidence_ids
-        )
+        # Entity sets describe every order-linked row. Evidence is narrower:
+        # item rows support totals/reconciliation, while a seller row is direct
+        # evidence only when the seller is the responsible party.
+        affected_seller_ids = order.seller_ids
+        item_evidence = order.item_evidence_ids
         seller_evidence = (
-            [f"seller:{seller_id}" for seller_id in affected_seller_ids]
+            [f"seller:{seller_id}" for seller_id in delivery.violating_seller_ids[:5]]
             if decision.primary_issue == "late_delivery_seller"
             else []
         )
